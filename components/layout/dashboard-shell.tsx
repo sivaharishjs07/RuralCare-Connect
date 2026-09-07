@@ -34,6 +34,12 @@ const navigationItems = [
   { label: 'Notifications', href: '/notifications', icon: Bell },
 ];
 
+const patientBookingItem = {
+  label: 'Book Appointment',
+  href: '/appointments/book',
+  icon: CalendarDays,
+};
+
 function UserSummary() {
   const { profile, user } = useAuth();
   const name = profile?.full_name ?? 'User';
@@ -57,10 +63,14 @@ function UserSummary() {
 
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const { role } = useAuth();
+  const items = role === 'patient'
+    ? [...navigationItems, patientBookingItem]
+    : navigationItems;
 
   return (
     <nav className="space-y-1" aria-label="Main navigation">
-      {navigationItems.map((item) => {
+      {items.map((item) => {
         const Icon = item.icon;
         const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
 
