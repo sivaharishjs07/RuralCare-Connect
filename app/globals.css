@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Healthcare palette — light mode */
+    --background: 210 40% 98%;        /* #F8FAFC */
+    --foreground: 222 47% 11%;        /* #0F172A */
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Primary Healthcare Teal: #0F766E */
+    --primary: 173 78% 26%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary Teal: #14B8A6 */
+    --secondary: 174 83% 40%;
+    --secondary-foreground: 0 0% 100%;
+
+    /* Accent Blue: #2563EB */
+    --accent: 221 83% 53%;
+    --accent-foreground: 0 0% 100%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%; /* #64748B */
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 173 78% 26%;
+
+    --chart-1: 173 78% 26%;  /* teal */
+    --chart-2: 221 83% 53%; /* blue */
+    --chart-3: 174 83% 40%; /* secondary teal */
+    --chart-4: 142 71% 45%; /* green */
+    --chart-5: 38 92% 50%;  /* amber */
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 174 83% 40%;
+    --primary-foreground: 222 47% 8%;
+    --secondary: 173 78% 30%;
+    --secondary-foreground: 210 40% 98%;
+    --accent: 221 83% 53%;
+    --accent-foreground: 210 40% 98%;
+    --muted: 222 47% 15%;
+    --muted-foreground: 215 20% 65%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+    --success: 142 71% 40%;
+    --success-foreground: 210 40% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 8%;
+    --border: 222 47% 20%;
+    --input: 222 47% 20%;
+    --ring: 174 83% 40%;
+    --chart-1: 174 83% 40%;
+    --chart-2: 221 83% 53%;
+    --chart-3: 173 78% 30%;
+    --chart-4: 142 71% 40%;
+    --chart-5: 38 92% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
