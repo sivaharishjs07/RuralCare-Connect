@@ -13,11 +13,9 @@ import {
 import Link from 'next/link';
 import { useAuth } from '@/hooks/use-auth';
 import { ROLE_LABELS, ROLE_DESCRIPTIONS } from '@/lib/auth/roles';
-import { usePatientLanguage } from '@/lib/i18n/patient-language';
 
 export default function DashboardPage() {
   const { profile, user } = useAuth();
-  const { t } = usePatientLanguage();
 
   if (!profile) return null;
 
@@ -31,28 +29,28 @@ export default function DashboardPage() {
     },
     {
       icon: Activity,
-      label: profile.role === 'patient' ? t('triage') : 'Digital Triage',
+      label: 'Digital Triage',
       description: 'Assess patient symptoms and risk levels',
       href: '/triage',
       color: 'text-secondary',
     },
     {
       icon: CalendarDays,
-      label: profile.role === 'patient' ? t('appointments') : 'Appointments & Queue',
+      label: 'Appointments & Queue',
       description: 'Manage appointments and patient queues',
       href: '/appointments',
       color: 'text-accent',
     },
     {
       icon: ClipboardList,
-      label: profile.role === 'patient' ? t('referrals') : 'Closed-Loop Referrals',
+      label: 'Closed-Loop Referrals',
       description: 'Track referrals from creation to completion',
       href: '/referrals',
       color: 'text-primary',
     },
     {
       icon: HeartPulse,
-      label: profile.role === 'patient' ? t('followUps') : 'Follow-Up Care',
+      label: 'Follow-Up Care',
       description: 'Track scheduled patient follow-ups and outcomes',
       href: '/follow-ups',
       color: 'text-secondary',
@@ -73,7 +71,7 @@ export default function DashboardPage() {
     },
     {
       icon: Bell,
-      label: profile.role === 'patient' ? t('notifications') : 'Notifications',
+      label: 'Notifications',
       description: 'View your healthcare system notifications',
       href: '/notifications',
       color: 'text-secondary',
@@ -95,7 +93,7 @@ export default function DashboardPage() {
 
             <div>
               <h1 className="text-xl font-bold text-primary-foreground sm:text-2xl">
-                {profile.role === 'patient' ? t('welcome') : 'Welcome'}, {profile.full_name}
+                Welcome, {profile.full_name}
               </h1>
 
               <p className="mt-0.5 text-sm text-primary-foreground/80">
@@ -145,7 +143,7 @@ export default function DashboardPage() {
         {/* Platform modules */}
         <div className="mb-4">
           <h2 className="text-lg font-bold text-foreground">
-            {profile.role === 'patient' ? t('quickActions') : 'Platform Modules'}
+            Platform Modules
           </h2>
 
           <p className="mt-1 text-sm text-muted-foreground">

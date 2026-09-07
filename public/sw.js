@@ -1,6 +1,5 @@
 const CACHE_NAME = 'ruralcare-static-v1';
 const CACHEABLE_DESTINATIONS = new Set(['script', 'style', 'font', 'image']);
-const IS_LOCAL_DEVELOPMENT = ['localhost', '127.0.0.1', '[::1]'].includes(self.location.hostname);
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -9,9 +8,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => Promise.all(
-      keys
-        .filter((key) => IS_LOCAL_DEVELOPMENT || key !== CACHE_NAME)
-        .map((key) => caches.delete(key))
+      keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
     ))
   );
   self.clients.claim();
@@ -19,8 +16,6 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
-  if (IS_LOCAL_DEVELOPMENT) return;
-
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
   if (!CACHEABLE_DESTINATIONS.has(request.destination)) return;
 

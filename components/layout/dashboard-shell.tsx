@@ -21,7 +21,6 @@ import { useAuth } from '@/hooks/use-auth';
 import { ROLE_LABELS } from '@/lib/auth/roles';
 import { cn } from '@/lib/utils';
 import { ConnectivityStatus } from '@/components/layout/connectivity-status';
-import { usePatientLanguage, type PatientLanguage } from '@/lib/i18n/patient-language';
 
 const navigationItems = [
   { label: 'Dashboard', href: '/dashboard', icon: Activity },
@@ -145,8 +144,6 @@ function Sidebar({ mobile = false, onClose }: { mobile?: boolean; onClose?: () =
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { profile, user } = useAuth();
-  const { language, setLanguage, t } = usePatientLanguage();
-  const isPatient = profile?.role === 'patient';
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -176,18 +173,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             <ConnectivityStatus />
-            {isPatient && (
-              <select
-                value={language}
-                onChange={(event) => setLanguage(event.target.value as PatientLanguage)}
-                aria-label={t('language')}
-                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-              >
-                <option value="en">English</option>
-                <option value="mr">मराठी</option>
-                <option value="hi">हिन्दी</option>
-              </select>
-            )}
             <div className="hidden items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 sm:flex">
               <span className="h-1.5 w-1.5 rounded-full bg-success" />
               <span className="text-xs font-semibold text-primary">{profile ? ROLE_LABELS[profile.role] : 'Account'}</span>

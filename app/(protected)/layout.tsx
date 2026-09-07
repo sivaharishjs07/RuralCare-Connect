@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { Loader2, HeartPulse } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { DashboardShell } from '@/components/layout/dashboard-shell';
-import { PatientLanguageProvider } from '@/lib/i18n/patient-language';
 
 export default function ProtectedLayout({
   children,
@@ -53,9 +52,5 @@ export default function ProtectedLayout({
     );
   }
 
-  return (
-    <PatientLanguageProvider>
-      <DashboardShell>{children}</DashboardShell>
-    </PatientLanguageProvider>
-  );
+  return <DashboardShell>{children}</DashboardShell>;
 }

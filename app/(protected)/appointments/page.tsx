@@ -1,1044 +1,265 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  AlertCircle,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  Clock3,
+  Edit3,
+  Filter,
+  Loader2,
+  MapPin,
+  Plus,
+  Search,
+  ShieldAlert,
+  Stethoscope,
+  UserRound,
+  Users,
+  X,
+} from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth';
+import { isHealthcareStaff } from '@/lib/auth/roles';
 import { supabaseClient } from '@/lib/supabase/client';
 import type { Appointment, Facility, Patient, Profile } from '@/lib/types/database';
-import {
-  assessSymptoms,
-  type SymptomAssessmentResult,
-} from '@/lib/triage/symptom-assessment';
-import { usePatientLanguage } from '@/lib/i18n/patient-language';
-import { CalendarDays, Check, Clock, Plus, Search, X } from 'lucide-react';
-import { useAuth } from '@/hooks/use-auth';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
-type AppointmentStatus = NonNullable<Appointment['status']>;
-
-const STATUS_OPTIONS: AppointmentStatus[] = [
-  'scheduled',
-  'checked_in',
-  'in_consultation',
-  'completed',
-  'cancelled',
-  'no_show',
-];
+type AppointmentStatus = Exclude<Appointment['status'], null>;
+type StatusFilter = 'all' | AppointmentStatus;
 
 type AppointmentForm = {
   patientId: string;
   doctorId: string;
   facilityId: string;
-  appointmentDate: string;
+  scheduledTime: string;
   status: AppointmentStatus;
   queueNumber: string;
-  notes: string;
-  symptoms: string;
+  reason: string;
 };
 
 const emptyForm: AppointmentForm = {
   patientId: '',
   doctorId: '',
   facilityId: '',
-  appointmentDate: '',
+  scheduledTime: '',
   status: 'scheduled',
   queueNumber: '',
-  notes: '',
-  symptoms: '',
+  reason: '',
 };
 
-function formatDateTime(value: string | null, locale = 'en-IN') {
-  if (!value) return '—';
+const statusOptions: { value: AppointmentStatus; label: string }[] = [
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'checked_in', label: 'Checked In' },
+  { value: 'in_consultation', label: 'In Consultation' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'no_show', label: 'Missed' },
+];
 
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) return value;
-
-  return date.toLocaleString(locale, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+function statusLabel(status: string | null) {
+  return statusOptions.find((option) => option.value === status)?.label ?? 'Not recorded';
 }
 
-function getStatusLabel(status: AppointmentStatus | null) {
-  if (!status) return 'Unknown';
-
-  return status
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function getStatusClass(status: AppointmentStatus | null) {
+function statusClasses(status: string | null) {
   switch (status) {
-    case 'scheduled':
-      return 'bg-blue-50 text-blue-700 border-blue-200';
-    case 'checked_in':
-      return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-    case 'in_consultation':
-      return 'bg-purple-50 text-purple-700 border-purple-200';
-    case 'completed':
-      return 'bg-green-50 text-green-700 border-green-200';
+    case 'completed': return 'border-success/30 bg-success/10 text-success';
     case 'cancelled':
-      return 'bg-red-50 text-red-700 border-red-200';
-    case 'no_show':
-      return 'bg-gray-100 text-gray-700 border-gray-200';
-    default:
-      return 'bg-gray-100 text-gray-700 border-gray-200';
+    case 'no_show': return 'border-destructive/25 bg-destructive/5 text-destructive';
+    case 'checked_in': return 'border-accent/30 bg-accent/10 text-accent';
+    case 'in_consultation': return 'border-secondary/30 bg-secondary/10 text-secondary';
+    default: return 'border-primary/20 bg-primary/5 text-primary';
   }
 }
+
+function formatDateTime(value: string | null) {
+  if (!value) return 'Not scheduled';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function dateKey(value: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : date.toISOString().slice(0, 10);
+}
+
+function formatDateInput(value: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function AppointmentForm({
+  patients,
+  doctors,
+  facilities,
+  form,
+  saving,
+  error,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  patients: Patient[];
+  doctors: Profile[];
+  facilities: Facility[];
+  form: AppointmentForm;
+  saving: boolean;
+  error: string | null;
+  onChange: (field: keyof AppointmentForm, value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Card className="border-primary/20 shadow-sm">
+      <CardHeader className="flex-row items-start justify-between space-y-0 border-b border-border/70">
+        <div>
+          <CardTitle className="text-lg">New appointment</CardTitle>
+          <CardDescription className="mt-1">Schedule a visit using existing care records.</CardDescription>
+        </div>
+        <Button type="button" variant="ghost" size="icon" onClick={onCancel} aria-label="Close appointment form"><X className="h-4 w-4" /></Button>
+      </CardHeader>
+      <form onSubmit={onSubmit}>
+        <CardContent className="space-y-5 pt-6">
+          {error && <div className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><span>{error}</span></div>}
+          <div className="space-y-2"><Label htmlFor="appointment-patient">Patient <span className="text-destructive">*</span></Label><select id="appointment-patient" required value={form.patientId} onChange={(event) => onChange('patientId', event.target.value)} className="select-field"><option value="">Select an existing patient</option>{patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.full_name}</option>)}</select></div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2"><Label htmlFor="appointment-doctor">Doctor</Label><select id="appointment-doctor" value={form.doctorId} onChange={(event) => onChange('doctorId', event.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"><option value="">Not assigned</option>{doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctor.full_name}</option>)}</select></div>
+            <div className="space-y-2"><Label htmlFor="appointment-facility">Facility</Label><select id="appointment-facility" value={form.facilityId} onChange={(event) => onChange('facilityId', event.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"><option value="">Not assigned</option>{facilities.map((facility) => <option key={facility.id} value={facility.id}>{facility.name}</option>)}</select></div>
+            <div className="space-y-2"><Label htmlFor="appointment-time">Date and time <span className="text-destructive">*</span></Label><Input id="appointment-time" required type="datetime-local" value={form.scheduledTime} onChange={(event) => onChange('scheduledTime', event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="appointment-status">Status</Label><select id="appointment-status" value={form.status} onChange={(event) => onChange('status', event.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+            <div className="space-y-2"><Label htmlFor="appointment-queue">Queue number</Label><Input id="appointment-queue" type="number" min="1" step="1" value={form.queueNumber} onChange={(event) => onChange('queueNumber', event.target.value)} placeholder="Optional" /></div>
+          </div>
+          <div className="space-y-2"><Label htmlFor="appointment-reason">Notes / reason</Label><textarea id="appointment-reason" value={form.reason} onChange={(event) => onChange('reason', event.target.value)} rows={3} className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="Add the appointment reason or notes" /></div>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="submit" disabled={saving}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Create appointment</Button></div>
+        </CardContent>
+      </form>
+    </Card>
+  );
+}
+
+function AppointmentCard({ appointment, patientName, doctorName, facilityName, canManage, updating, onStatusChange }: { appointment: Appointment; patientName: string; doctorName: string; facilityName: string; canManage: boolean; updating: boolean; onStatusChange: (appointment: Appointment, status: AppointmentStatus) => void }) {
+  return (
+    <Card className="transition-shadow hover:shadow-md">
+      <CardContent className="p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></div><div className="min-w-0"><h3 className="truncate font-semibold text-foreground">{patientName}</h3><p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><Clock3 className="h-3.5 w-3.5" />{formatDateTime(appointment.scheduled_time)}</p></div></div>
+          <span className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-bold ${statusClasses(appointment.status)}`}>{statusLabel(appointment.status)}</span>
+        </div>
+        <div className="mt-5 grid gap-3 border-t border-border/70 pt-4 text-sm sm:grid-cols-2"><div className="flex items-start gap-2 text-muted-foreground"><Stethoscope className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{doctorName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{facilityName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><span className="flex h-4 min-w-4 items-center justify-center rounded bg-muted px-1 text-[10px] font-bold text-foreground">{appointment.queue_number ?? '—'}</span><span>Queue number</span></div><div className="flex items-start gap-2 text-muted-foreground"><FileTextIcon /><span>{appointment.reason || 'No notes or reason recorded'}</span></div></div>
+        {canManage && <div className="mt-4 flex flex-wrap gap-2 border-t border-border/70 pt-4"><span className="mr-1 self-center text-xs font-medium text-muted-foreground">Update status:</span>{(['checked_in', 'completed', 'cancelled', 'no_show'] as AppointmentStatus[]).map((status) => <Button key={status} type="button" variant="outline" size="sm" disabled={updating || appointment.status === status} onClick={() => onStatusChange(appointment, status)}>{updating && appointment.status !== status && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{statusLabel(status)}</Button>)}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FileTextIcon() { return <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border border-primary/30 text-[9px] text-primary">i</span>; }
 
 export default function AppointmentsPage() {
-  const { profile, user } = useAuth();
-  const { language, t } = usePatientLanguage();
-  const patientLocale = language === 'mr' ? 'mr-IN' : language === 'hi' ? 'hi-IN' : 'en-IN';
-
-  const isPatient = profile?.role === 'patient';
-
-  function patientStatusLabel(status: AppointmentStatus | null) {
-    if (!isPatient) return getStatusLabel(status);
-    if (status === 'scheduled') return t('scheduled');
-    if (status === 'completed') return t('completed');
-    if (status === 'cancelled') return t('cancelled');
-    if (status === 'checked_in') return t('checkedIn');
-    if (status === 'in_consultation') return t('inConsultation');
-    if (status === 'no_show') return t('noShow');
-    return t('notAssigned');
-  }
-
-  function patientRecommendation(riskLevel: SymptomAssessmentResult['riskLevel']) {
-    switch (riskLevel) {
-      case 'emergency': return t('emergencyRecommendation');
-      case 'high': return t('highRecommendation');
-      case 'medium': return t('mediumRecommendation');
-      default: return t('lowRecommendation');
-    }
-  }
-
+  const { user, role } = useAuth();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Profile[]>([]);
   const [facilities, setFacilities] = useState<Facility[]>([]);
-
-  const [myPatient, setMyPatient] = useState<Patient | null>(null);
-
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<
-    'all' | AppointmentStatus
-  >('all');
-
-  const [showForm, setShowForm] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [facilityFilter, setFacilityFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('');
   const [form, setForm] = useState<AppointmentForm>(emptyForm);
-  const [symptomAssessment, setSymptomAssessment] =
-    useState<SymptomAssessmentResult | null>(null);
+  const canManage = isHealthcareStaff(role);
 
-  async function loadData() {
-    if (!profile) return;
-
+  const loadData = async () => {
     setLoading(true);
-    setError('');
-
-    try {
-      let patientRecord: Patient | null = null;
-
-      if (isPatient) {
-        const { data, error: patientError } = await supabaseClient
-          .from('patients')
-          .select('*')
-          .eq('profile_id', profile.id)
-          .maybeSingle();
-
-        if (patientError) {
-          throw new Error(
-            isPatient
-              ? `${t('unableLoadProfile')} — ${patientError.message}`
-              : `Unable to load your patient profile — ${patientError.message}`
-          );
-        }
-
-        if (!data) {
-          throw new Error(
-            'Your patient profile is not connected yet. Please contact the administrator.'
-          );
-        }
-
-        patientRecord = data as Patient;
-        setMyPatient(patientRecord);
-      }
-
-      let appointmentsQuery = supabaseClient
-        .from('appointments')
-        .select('*')
-        .order('appointment_date', { ascending: true });
-
-      if (isPatient && patientRecord) {
-        appointmentsQuery = appointmentsQuery.eq(
-          'patient_id',
-          patientRecord.id
-        );
-      }
-
-      const appointmentsResult = await appointmentsQuery;
-
-      if (appointmentsResult.error) {
-        throw new Error(
-          `${isPatient ? t('unableLoadAppointments') : 'Unable to load appointments'} — ${appointmentsResult.error.message}`
-        );
-      }
-
-      let loadedPatients: Patient[] = [];
-
-      if (!isPatient) {
-        const { data, error: patientsError } = await supabaseClient
-          .from('patients')
-          .select('*')
-          .order('full_name', { ascending: true });
-
-        if (patientsError) {
-          throw new Error(
-            `Unable to load patients — ${patientsError.message}`
-          );
-        }
-
-        loadedPatients = (data || []) as Patient[];
-      } else if (patientRecord) {
-        loadedPatients = [patientRecord];
-      }
-
-      setPatients(loadedPatients);
-
-      const [doctorsResult, facilitiesResult] = await Promise.all([
-        supabaseClient
-          .from('profiles')
-          .select('*')
-          .eq('role', 'doctor')
-          .order('full_name', { ascending: true }),
-
-        supabaseClient
-          .from('facilities')
-          .select('*')
-          .order('name', { ascending: true }),
-      ]);
-
-      if (doctorsResult.error) {
-        throw new Error(
-          `Unable to load doctors — ${doctorsResult.error.message}`
-        );
-      }
-
-      if (facilitiesResult.error) {
-        throw new Error(
-          `Unable to load facilities — ${facilitiesResult.error.message}`
-        );
-      }
-
-      setAppointments((appointmentsResult.data || []) as Appointment[]);
-      setDoctors((doctorsResult.data || []) as Profile[]);
-      setFacilities((facilitiesResult.data || []) as Facility[]);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : isPatient
-            ? t('unableLoadAppointments')
-            : 'Unable to load appointments'
-      );
-    } finally {
-      setLoading(false);
+    setError(null);
+    const [appointmentResult, patientResult, doctorResult, facilityResult] = await Promise.all([
+      supabaseClient.from('appointments').select('*').order('scheduled_time', { ascending: true }),
+      supabaseClient.from('patients').select('*').order('full_name', { ascending: true }),
+      supabaseClient.from('profiles').select('*').eq('role', 'doctor').order('full_name', { ascending: true }),
+      supabaseClient.from('facilities').select('*').order('name', { ascending: true }),
+    ]);
+    const coreFailure = appointmentResult.error ?? patientResult.error;
+    if (coreFailure) {
+      setError(coreFailure.message);
+    } else {
+      setAppointments((appointmentResult.data ?? []) as Appointment[]);
+      setPatients((patientResult.data ?? []) as Patient[]);
+      setDoctors(doctorResult.error ? [] : (doctorResult.data ?? []) as Profile[]);
+      setFacilities(facilityResult.error ? [] : (facilityResult.data ?? []) as Facility[]);
     }
-  }
+    setLoading(false);
+  };
 
-  useEffect(() => {
-    if (profile) {
-      void loadData();
-    }
-  }, [profile, isPatient]);
+  useEffect(() => { if (user) void loadData(); }, [user]);
 
-  const patientMap = useMemo(
-    () => new Map(patients.map((patient) => [patient.id, patient])),
-    [patients]
-  );
+  const patientNames = useMemo(() => new Map(patients.map((patient) => [patient.id, patient.full_name])), [patients]);
+  const doctorNames = useMemo(() => new Map(doctors.map((doctor) => [doctor.id, doctor.full_name])), [doctors]);
+  const facilityNames = useMemo(() => new Map(facilities.map((facility) => [facility.id, facility.name])), [facilities]);
+  const filteredAppointments = useMemo(() => appointments.filter((appointment) => {
+    const patientName = patientNames.get(appointment.patient_id) ?? '';
+    const matchesSearch = !search.trim() || patientName.toLowerCase().includes(search.trim().toLowerCase()) || appointment.reason?.toLowerCase().includes(search.trim().toLowerCase());
+    return matchesSearch && (statusFilter === 'all' || appointment.status === statusFilter) && (facilityFilter === 'all' || appointment.facility_id === facilityFilter) && (!dateFilter || dateKey(appointment.scheduled_time) === dateFilter);
+  }), [appointments, dateFilter, facilityFilter, patientNames, search, statusFilter]);
+  const queueAppointments = filteredAppointments.filter((appointment) => appointment.queue_number !== null).sort((first, second) => (first.queue_number ?? 0) - (second.queue_number ?? 0));
 
-  const doctorMap = useMemo(
-    () => new Map(doctors.map((doctor) => [doctor.id, doctor])),
-    [doctors]
-  );
+  const updateField = (field: keyof AppointmentForm, value: string) => setForm((current) => ({ ...current, [field]: value }));
+  const resetFilters = () => { setSearch(''); setStatusFilter('all'); setFacilityFilter('all'); setDateFilter(''); };
 
-  const facilityMap = useMemo(
-    () => new Map(facilities.map((facility) => [facility.id, facility])),
-    [facilities]
-  );
+  const saveAppointment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!user || !canManage) return;
+    setSaving(true); setFormError(null); setNotice(null);
+    if (!form.patientId || !form.scheduledTime) { setFormError('Select a patient and appointment date and time.'); setSaving(false); return; }
+    const queueNumber = form.queueNumber ? Number(form.queueNumber) : null;
+    if (queueNumber !== null && (!Number.isInteger(queueNumber) || queueNumber < 1)) { setFormError('Queue number must be a positive whole number.'); setSaving(false); return; }
+    const { error: saveError } = await supabaseClient.from('appointments').insert({ patient_id: form.patientId, healthcare_worker_id: form.doctorId || null, facility_id: form.facilityId || null, scheduled_time: new Date(form.scheduledTime).toISOString(), status: form.status, queue_number: queueNumber, reason: form.reason.trim() || null } as never);
+    if (saveError) setFormError(saveError.message);
+    else { setNotice('Appointment created successfully.'); setForm(emptyForm); setFormOpen(false); await loadData(); }
+    setSaving(false);
+  };
 
-  const filteredAppointments = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
-    return appointments.filter((appointment) => {
-      const patient = patientMap.get(appointment.patient_id);
-      const doctor = appointment.doctor_id
-        ? doctorMap.get(appointment.doctor_id)
-        : undefined;
-      const facility = appointment.facility_id
-        ? facilityMap.get(appointment.facility_id)
-        : undefined;
-
-      const patientName = patient?.full_name || '';
-      const district = patient?.district || '';
-      const gender = patient?.gender || '';
-      const doctorName = doctor?.full_name || '';
-      const facilityName = facility?.name || '';
-      const notes = appointment.notes || '';
-
-      const matchesSearch =
-        !query ||
-        patientName.toLowerCase().includes(query) ||
-        district.toLowerCase().includes(query) ||
-        gender.toLowerCase().includes(query) ||
-        doctorName.toLowerCase().includes(query) ||
-        facilityName.toLowerCase().includes(query) ||
-        notes.toLowerCase().includes(query);
-
-      const matchesStatus =
-        statusFilter === 'all' || appointment.status === statusFilter;
-
-      return matchesSearch && matchesStatus;
-    });
-  }, [
-    appointments,
-    search,
-    statusFilter,
-    patientMap,
-    doctorMap,
-    facilityMap,
-  ]);
-
-  function updateForm<K extends keyof AppointmentForm>(
-    field: K,
-    value: AppointmentForm[K]
-  ) {
-    setForm((current) => ({
-      ...current,
-      [field]: value,
-    }));
-  }
-
-  /*
-   * Creates a notification for the patient.
-   * The notification is linked to both the patient's profile and patient row.
-   */
-  async function createPatientNotification(
-    patientId: string,
-    title: string,
-    message: string
-  ) {
-    const { data: patientData, error: patientError } = await supabaseClient
-      .from('patients')
-      .select('profile_id')
-      .eq('id', patientId)
-      .maybeSingle();
-
-    if (patientError) {
-      console.error(
-        'Unable to find patient profile for notification:',
-        patientError.message
-      );
-      return;
-    }
-
-    const profileId = patientData?.profile_id;
-
-    if (!profileId) {
-      console.warn(
-        'Patient has no connected profile. Notification was not created.'
-      );
-      return;
-    }
-
-    const { error: notificationError } = await supabaseClient
-      .from('notifications')
-      .insert({
-        user_id: profileId,
-        title,
-        message,
-        is_read: false,
-      });
-
-    if (notificationError) {
-      console.error(
-        'Unable to create appointment notification:',
-        notificationError.message
-      );
-    }
-  }
-
-  async function handleCreateAppointment(e: React.FormEvent) {
-    e.preventDefault();
-
-    setError('');
-    setSuccess('');
-
-    if (isPatient && !symptomAssessment) {
-      if (!form.symptoms.trim()) {
-        setError(t('pleaseDescribeSymptoms'));
-        return;
-      }
-
-      setSymptomAssessment(assessSymptoms(form.symptoms));
-      return;
-    }
-
-    const selectedPatientId = isPatient
-      ? myPatient?.id
-      : form.patientId;
-
-    if (!selectedPatientId) {
-      setError(
-        isPatient
-          ? t('profileMissing')
-          : 'Please select a patient.'
-      );
-      return;
-    }
-
-    if (!form.appointmentDate) {
-      setError(
-        isPatient
-          ? t('dateRequired')
-          : 'Please select an appointment date and time.'
-      );
-      return;
-    }
-
-    const queueNumber = form.queueNumber.trim()
-      ? Number(form.queueNumber)
-      : null;
-
-    if (
-      queueNumber !== null &&
-      (!Number.isInteger(queueNumber) || queueNumber < 1)
-    ) {
-      setError('Queue number must be a positive whole number.');
-      return;
-    }
-
-    setSaving(true);
-
-    try {
-      if (isPatient && symptomAssessment) {
-        const { error: assessmentError } = await supabaseClient
-          .from('triage_assessments')
-          .insert({
-            patient_id: selectedPatientId,
-            symptoms: form.symptoms.trim(),
-            risk_level: symptomAssessment.riskLevel,
-            risk_score: symptomAssessment.riskScore,
-            recommendation: symptomAssessment.recommendation,
-            created_by: user?.id ?? null,
-          });
-
-        if (assessmentError) {
-          throw new Error(
-            `${t('unableSaveAssessment')} — ${assessmentError.message}`
-          );
-        }
-      }
-
-      const appointmentDate = new Date(
-        form.appointmentDate
-      ).toISOString();
-
-      const { data: createdAppointment, error: insertError } =
-        await supabaseClient
-          .from('appointments')
-          .insert({
-            patient_id: selectedPatientId,
-            doctor_id: form.doctorId || null,
-            facility_id: form.facilityId || null,
-            appointment_date: appointmentDate,
-            status: 'scheduled',
-            queue_number: queueNumber,
-            notes: form.notes.trim() || null,
-          })
-          .select('*')
-          .single();
-
-      if (insertError) {
-        throw new Error(
-          `Unable to create appointment — ${insertError.message}`
-        );
-      }
-
-      const appointment = createdAppointment as Appointment;
-
-      await createPatientNotification(
-        selectedPatientId,
-        'Appointment booked',
-        `Your appointment has been booked for ${formatDateTime(
-          appointment.appointment_date
-        )}.`
-      );
-
-      setSuccess(
-        isPatient
-          ? t('appointmentBookedSuccess')
-          : 'Appointment created successfully. The patient has been notified.'
-      );
-
-      setForm({
-        ...emptyForm,
-        patientId: isPatient && myPatient ? myPatient.id : '',
-      });
-      setSymptomAssessment(null);
-
-      setShowForm(false);
-
-      await loadData();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : isPatient
-            ? t('unableCreateAppointment')
-            : 'Unable to create appointment'
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function updateStatus(
-    appointmentId: string,
-    status: AppointmentStatus
-  ) {
-    if (isPatient) return;
-
-    setError('');
-    setSuccess('');
-
-    const appointment = appointments.find(
-      (item) => item.id === appointmentId
-    );
-
-    if (!appointment) {
-      setError('Appointment could not be found.');
-      return;
-    }
-
-    const { error: updateError } = await supabaseClient
-      .from('appointments')
-      .update({ status })
-      .eq('id', appointmentId);
-
-    if (updateError) {
-      setError(
-        `Unable to update appointment — ${updateError.message}`
-      );
-      return;
-    }
-
-    setAppointments((current) =>
-      current.map((item) =>
-        item.id === appointmentId
-          ? { ...item, status }
-          : item
-      )
-    );
-
-    await createPatientNotification(
-      appointment.patient_id,
-      'Appointment status updated',
-      `Your appointment status is now "${getStatusLabel(status)}".`
-    );
-
-    setSuccess(
-      'Appointment status updated and the patient has been notified.'
-    );
-  }
-
-  function getPatientName(patientId: string) {
-    return patientMap.get(patientId)?.full_name || 'Unknown patient';
-  }
-
-  function getDoctorName(doctorId: string | null) {
-    if (!doctorId) return isPatient ? t('notAssigned') : 'Not assigned';
-
-    return doctorMap.get(doctorId)?.full_name || 'Unknown doctor';
-  }
-
-  function getFacilityName(facilityId: string | null) {
-    if (!facilityId) return isPatient ? t('notAssigned') : 'Not assigned';
-
-    return facilityMap.get(facilityId)?.name || 'Unknown facility';
-  }
-
-  if (!profile) return null;
+  const changeStatus = async (appointment: Appointment, status: AppointmentStatus) => {
+    if (!canManage) return;
+    setUpdatingId(appointment.id); setNotice(null); setError(null);
+    const { error: updateError } = await supabaseClient.from('appointments').update({ status } as never).eq('id', appointment.id);
+    if (updateError) setError(`Unable to update appointment status: ${updateError.message}`);
+    else { setNotice(`Appointment marked ${statusLabel(status).toLowerCase()}.`); await loadData(); }
+    setUpdatingId(null);
+  };
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            {isPatient ? t('myAppointments') : 'Appointments & Queue'}
-          </h1>
-
-          <p className="mt-1 text-sm text-gray-500">
-            {isPatient
-              ? t('bookAndView')
-              : 'Manage patient appointments and queue status.'}
-          </p>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            setError('');
-            setSuccess('');
-
-            setForm({
-              ...emptyForm,
-              patientId: isPatient && myPatient ? myPatient.id : '',
-            });
-
-            setShowForm(true);
-          }}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          <Plus className="h-4 w-4" />
-          {isPatient ? t('bookAppointment') : 'New Appointment'}
-        </button>
-      </div>
-
-      {error && (
-        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          <X className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {success && (
-        <div className="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-700">
-          <Check className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{success}</span>
-        </div>
-      )}
-
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={
-                isPatient
-                  ? t('searchAppointments')
-                  : 'Search patient, doctor, facility...'
-              }
-              className="w-full rounded-lg border border-gray-300 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-
-          <select
-            value={statusFilter}
-            onChange={(e) =>
-              setStatusFilter(
-                e.target.value as 'all' | AppointmentStatus
-              )
-            }
-            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-          >
-            <option value="all">{isPatient ? t('allStatuses') : 'All statuses'}</option>
-
-            {STATUS_OPTIONS.map((status) => (
-              <option key={status} value={status}>
-                {isPatient ? patientStatusLabel(status) : getStatusLabel(status)}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {showForm && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-5 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900">
-                {isPatient ? t('bookAnAppointment') : 'Create Appointment'}
-              </h2>
-
-              <p className="text-sm text-gray-500">
-                {isPatient
-                  ? t('appointmentSaved')
-                  : 'Add an appointment to the Supabase database.'}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowForm(false)}
-              className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-
-          <form
-            onSubmit={handleCreateAppointment}
-            className="grid gap-4 md:grid-cols-2"
-          >
-            {!isPatient && (
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Patient *
-                </label>
-
-                <select
-                  value={form.patientId}
-                  onChange={(e) =>
-                    updateForm('patientId', e.target.value)
-                  }
-                  required
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="">Select patient</option>
-
-                  {patients.map((patient) => (
-                    <option key={patient.id} value={patient.id}>
-                      {patient.full_name}
-                      {patient.district
-                        ? ` — ${patient.district}`
-                        : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                {isPatient ? t('doctor') : 'Doctor'}
-              </label>
-
-              <select
-                value={form.doctorId}
-                onChange={(e) =>
-                  updateForm('doctorId', e.target.value)
-                }
-                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="">{isPatient ? t('notAssigned') : 'Not assigned'}</option>
-
-                {doctors.map((doctor) => (
-                  <option key={doctor.id} value={doctor.id}>
-                    {doctor.full_name || doctor.id}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                {isPatient ? t('facility') : 'Facility'}
-              </label>
-
-              <select
-                value={form.facilityId}
-                onChange={(e) =>
-                  updateForm('facilityId', e.target.value)
-                }
-                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="">{isPatient ? t('notAssigned') : 'Not assigned'}</option>
-
-                {facilities.map((facility) => (
-                  <option key={facility.id} value={facility.id}>
-                    {facility.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                {isPatient ? t('dateAndTime') : 'Appointment Date & Time'} *
-              </label>
-
-              <input
-                type="datetime-local"
-                value={form.appointmentDate}
-                onChange={(e) =>
-                  updateForm('appointmentDate', e.target.value)
-                }
-                required
-                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            {!isPatient && (
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Status
-                </label>
-
-                <select
-                  value={form.status}
-                  onChange={(e) =>
-                    updateForm(
-                      'status',
-                      e.target.value as AppointmentStatus
-                    )
-                  }
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                >
-                  {STATUS_OPTIONS.map((status) => (
-                    <option key={status} value={status}>
-                      {getStatusLabel(status)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {!isPatient && (
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Queue Number
-                </label>
-
-                <input
-                  type="number"
-                  min="1"
-                  value={form.queueNumber}
-                  onChange={(e) =>
-                    updateForm('queueNumber', e.target.value)
-                  }
-                  placeholder="e.g. 12"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            )}
-
-            <div className="md:col-span-2">
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                {isPatient ? t('notes') : 'Notes'}
-              </label>
-
-              <textarea
-                value={form.notes}
-                onChange={(e) =>
-                  updateForm('notes', e.target.value)
-                }
-                rows={3}
-                placeholder={isPatient ? t('appointmentNotes') : 'Reason or additional appointment notes...'}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            {isPatient && (
-              <div className="md:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                  {t('whatSymptoms')} *
-                </label>
-                <textarea
-                  value={form.symptoms}
-                  onChange={(e) => {
-                    updateForm('symptoms', e.target.value);
-                    setSymptomAssessment(null);
-                  }}
-                  rows={4}
-                  required
-                  placeholder={t('symptomInstructions')}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1.5 text-xs text-gray-500">
-                  {t('symptomDisclaimer')}
-                </p>
-              </div>
-            )}
-
-            {isPatient && symptomAssessment && (
-              <div className="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="font-semibold">
-                    {t(symptomAssessment.riskLevel)} {t('risk')}
-                  </p>
-                  <p>{t('riskScore')}: {symptomAssessment.riskScore}</p>
-                </div>
-                <p className="mt-2">{patientRecommendation(symptomAssessment.riskLevel)}</p>
-                <p className="mt-2 text-xs">
-                  {t('medicalDisclaimer')}
-                </p>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-3 md:col-span-2">
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                {isPatient ? t('cancel') : 'Cancel'}
-              </button>
-
-              <button
-                type="submit"
-                disabled={saving}
-                className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {saving
-                  ? t('saving')
-                  : isPatient
-                    ? symptomAssessment
-                      ? t('confirmAndBook')
-                      : t('reviewSymptoms')
-                    : 'Create Appointment'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-semibold text-gray-900">
-                {isPatient ? t('appointmentList') : 'Appointment List'}
-              </h2>
-
-              <p className="text-sm text-gray-500">
-                {filteredAppointments.length} appointment
-                {filteredAppointments.length === 1 ? '' : 's'}
-              </p>
-            </div>
-
-            <CalendarDays className="h-5 w-5 text-gray-400" />
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center px-6 py-12 text-sm text-gray-500">
-            {isPatient ? t('loadingAppointments') : 'Loading appointments...'}
-          </div>
-        ) : filteredAppointments.length === 0 ? (
-          <div className="px-6 py-12 text-center">
-            <CalendarDays className="mx-auto h-10 w-10 text-gray-300" />
-
-            <h3 className="mt-3 font-medium text-gray-900">
-              {isPatient
-                ? t('noAppointments')
-                : 'No appointments found'}
-            </h3>
-
-            <p className="mt-1 text-sm text-gray-500">
-              {isPatient
-                ? t('bookFirstAppointment')
-                : 'Try changing your search or create a new appointment.'}
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-100">
-            {filteredAppointments.map((appointment) => (
-              <div
-                key={appointment.id}
-                className="p-5 transition hover:bg-gray-50"
-              >
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {!isPatient && (
-                        <h3 className="font-semibold text-gray-900">
-                          {getPatientName(appointment.patient_id)}
-                        </h3>
-                      )}
-
-                      {isPatient && (
-                        <h3 className="font-semibold text-gray-900">
-                          {t('yourAppointment')}
-                        </h3>
-                      )}
-
-                      <span
-                        className={`rounded-full border px-2.5 py-1 text-xs font-medium ${getStatusClass(
-                          appointment.status
-                        )}`}
-                      >
-                        {patientStatusLabel(appointment.status)}
-                      </span>
-
-                      {appointment.queue_number !== null &&
-                        appointment.queue_number !== undefined && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
-                            Queue #{appointment.queue_number}
-                          </span>
-                        )}
-                    </div>
-
-                    <div className="mt-3 grid gap-2 text-sm text-gray-600 md:grid-cols-2">
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-gray-400" />
-
-                        <span>
-                          {formatDateTime(
-                            appointment.appointment_date,
-                            isPatient ? patientLocale : 'en-IN'
-                          )}
-                        </span>
-                      </div>
-
-                      <div>
-                        <span className="font-medium text-gray-700">
-                          {isPatient ? t('doctor') : 'Doctor'}:
-                        </span>{' '}
-                        {getDoctorName(appointment.doctor_id)}
-                      </div>
-
-                      <div>
-                        <span className="font-medium text-gray-700">
-                          {isPatient ? t('facility') : 'Facility'}:
-                        </span>{' '}
-                        {getFacilityName(appointment.facility_id)}
-                      </div>
-
-                      {appointment.notes && (
-                        <div>
-                          <span className="font-medium text-gray-700">
-                            {isPatient ? t('notes') : 'Notes'}:
-                          </span>{' '}
-                          {appointment.notes}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {!isPatient && (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={appointment.status || ''}
-                        onChange={(e) =>
-                          void updateStatus(
-                            appointment.id,
-                            e.target.value as AppointmentStatus
-                          )
-                        }
-                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                      >
-                        {STATUS_OPTIONS.map((status) => (
-                          <option key={status} value={status}>
-                            {getStatusLabel(status)}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="mb-2 text-sm font-semibold uppercase tracking-wider text-primary">Care coordination</p><h1 className="text-3xl font-bold tracking-tight text-foreground">Appointments &amp; Queue</h1><p className="mt-2 max-w-2xl text-sm text-muted-foreground">Schedule visits and manage the patient queue using existing appointment records.</p></div>{canManage && <Button type="button" onClick={() => { setFormError(null); setNotice(null); setFormOpen(true); }}><Plus className="mr-2 h-4 w-4" />New Appointment</Button>}</div>
+      {notice && <div className="mb-6 flex items-center gap-2 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success" role="status"><CheckCircle2 className="h-4 w-4" />{notice}</div>}
+      {!canManage && <div className="mb-6 flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 p-3 text-sm text-muted-foreground"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" />You have read-only appointment access. Any permissions are enforced by your existing account and Supabase RLS.</div>}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)]">
+        <section className="min-w-0 space-y-5">
+          <Card><CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search patient or notes" className="pl-9" aria-label="Search appointments" /></div><div className="relative"><Filter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring pl-9" aria-label="Filter by status"><option value="all">All statuses</option>{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div><select value={facilityFilter} onChange={(event) => setFacilityFilter(event.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" aria-label="Filter by facility"><option value="all">All facilities</option>{facilities.map((facility) => <option key={facility.id} value={facility.id}>{facility.name}</option>)}</select><div className="flex gap-2"><Input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} aria-label="Filter by date" /><Button type="button" variant="ghost" size="icon" onClick={resetFilters} aria-label="Clear filters"><X className="h-4 w-4" /></Button></div></CardContent></Card>
+          {error && <div className="flex items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive" role="alert"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" /><div><p className="font-semibold">Unable to load appointments</p><p className="mt-1">{error}</p><Button type="button" variant="outline" size="sm" onClick={() => void loadData()} className="mt-3">Try again</Button></div></div>}
+          <div className="flex items-end justify-between"><div><h2 className="text-lg font-semibold text-foreground">Appointment list</h2><p className="text-sm text-muted-foreground">{loading ? 'Loading records...' : `${filteredAppointments.length} appointment${filteredAppointments.length === 1 ? '' : 's'} shown`}</p></div></div>
+          {loading && !error && <div className="flex min-h-48 items-center justify-center rounded-lg border border-border/70 bg-card"><Loader2 className="h-6 w-6 animate-spin text-primary" /><span className="ml-2 text-sm text-muted-foreground">Loading appointments...</span></div>}
+          {!loading && !error && filteredAppointments.length === 0 && <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card px-6 text-center"><CalendarDays className="h-8 w-8 text-muted-foreground/60" /><h3 className="mt-3 font-semibold text-foreground">No appointments scheduled yet.</h3><p className="mt-1 max-w-sm text-sm text-muted-foreground">{search || dateFilter || statusFilter !== 'all' || facilityFilter !== 'all' ? 'Try clearing or changing the filters.' : canManage ? 'Create an appointment to start managing the queue.' : 'Appointments available to your account will appear here.'}</p></div>}
+          {!loading && !error && filteredAppointments.length > 0 && <div className="space-y-4">{filteredAppointments.map((appointment) => <AppointmentCard key={appointment.id} appointment={appointment} patientName={patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'} doctorName={appointment.healthcare_worker_id ? doctorNames.get(appointment.healthcare_worker_id) ?? 'Assigned clinician' : 'Doctor not assigned'} facilityName={appointment.facility_id ? facilityNames.get(appointment.facility_id) ?? 'Assigned facility' : 'Facility not assigned'} canManage={canManage} updating={updatingId === appointment.id} onStatusChange={changeStatus} />)}</div>}
+        </section>
+        <aside className="space-y-6">
+          {formOpen && canManage && <AppointmentForm patients={patients} doctors={doctors} facilities={facilities} form={form} saving={saving} error={formError} onChange={updateField} onSubmit={saveAppointment} onCancel={() => { if (!saving) { setFormOpen(false); setFormError(null); } }} />}
+          {!formOpen && canManage && <Card className="hidden border-dashed border-border/80 bg-card/50 lg:block"><CardContent className="flex flex-col items-center px-6 py-10 text-center"><CalendarDays className="h-8 w-8 text-primary/70" /><h2 className="mt-4 font-semibold text-foreground">Schedule a visit</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Create appointments with existing patients, clinicians, and facilities.</p><Button type="button" variant="outline" onClick={() => setFormOpen(true)} className="mt-5"><Plus className="mr-2 h-4 w-4" />New Appointment</Button></CardContent></Card>}
+          <Card><CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Users className="h-5 w-5 text-primary" />Queue view</CardTitle><CardDescription>{dateFilter ? `Queue for ${dateFilter}` : 'Select a date filter to focus the queue.'}</CardDescription></CardHeader><CardContent>{queueAppointments.length === 0 ? <p className="rounded-md bg-muted/40 px-3 py-4 text-center text-sm text-muted-foreground">No queued appointments for the current filters.</p> : <div className="space-y-3">{queueAppointments.map((appointment) => <div key={appointment.id} className="flex items-start gap-3 rounded-md border border-border/70 p-3"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground">{appointment.queue_number}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'}</p><p className="mt-1 text-xs text-muted-foreground">{formatDateTime(appointment.scheduled_time)}</p><span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(appointment.status)}`}>{statusLabel(appointment.status)}</span></div></div>)}</div>}</CardContent></Card>
+        </aside>
       </div>
     </div>
   );
