@@ -5,6 +5,15 @@ import { AlertCircle, CalendarDays, CheckCircle2, Clock3, Loader2 } from 'lucide
 import { useAuth } from '@/hooks/use-auth';
 import { assessSymptoms, type SymptomAssessmentResult } from '@/lib/triage/symptom-assessment';
 import { supabaseClient } from '@/lib/supabase/client';
+import {
+  saveOutboxItem,
+  deleteRecord,
+} from '@/lib/offline/indexed-db';
+import {
+  syncPendingPatientAppointments,
+  type PendingPatientAppointment,
+  type PendingPatientTriage,
+} from '@/lib/offline/appointment-sync';
 import { usePatientLanguage } from '@/lib/i18n/patient-language';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,7 +31,16 @@ type BookingDetails = {
   facilityName: string;
   doctorName: string;
   appointmentDate: string;
+  offline: boolean;
 };
+
+function createLocalId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function formatAppointmentDate(value: string) {
   const date = new Date(value);
@@ -50,6 +68,26 @@ export default function PatientAppointmentBookingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [triageSaved, setTriageSaved] = useState(false);
   const [bookedAppointment, setBookedAppointment] = useState<BookingDetails | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (role !== 'patient' || !user?.id) return;
+
+    const syncPending = async () => {
+      if (!navigator.onLine) return;
+
+      try {
+        const syncedCount = await syncPendingPatientAppointments(user.id);
+        if (syncedCount > 0) setSyncNotice(t('offlineAppointmentSynced'));
+      } catch {
+        // Pending items remain in IndexedDB for the next online attempt.
+      }
+    };
+
+    void syncPending();
+    window.addEventListener('online', syncPending);
+    return () => window.removeEventListener('online', syncPending);
+  }, [role, t, user?.id]);
 
   useEffect(() => {
     if (authLoading || role !== 'patient' || !user?.id) return;
@@ -151,6 +189,70 @@ export default function PatientAppointmentBookingPage() {
 
     setSubmitting(true);
 
+    const facilityName = facilities.find((facility) => facility.id === facilityId)?.name ?? t('notAssigned');
+    const doctorName = doctors.find((doctor) => doctor.id === doctorId)?.name ?? t('notAssigned');
+
+    if (!navigator.onLine) {
+      const triageId = createLocalId();
+      const appointmentId = createLocalId();
+      const createdAt = new Date().toISOString();
+      const triagePayload: PendingPatientTriage = {
+        id: triageId,
+        patient_id: patientId,
+        symptoms: symptoms.trim(),
+        risk_level: assessment.riskLevel,
+        risk_score: assessment.riskScore,
+        recommendation: assessment.recommendation,
+        created_by: user.id,
+      };
+      const appointmentPayload: PendingPatientAppointment = {
+        id: appointmentId,
+        patient_id: patientId,
+        doctor_id: doctorId,
+        facility_id: facilityId,
+        appointment_date: appointmentDate.toISOString(),
+        status: 'scheduled',
+        queue_number: null,
+        notes: null,
+      };
+
+      try {
+        await saveOutboxItem({
+          localOperationId: triageId,
+          operationType: 'insert',
+          resource: 'triage_assessments',
+          ownerId: user.id,
+          payload: triagePayload,
+          createdAt,
+          retryCount: 0,
+          syncStatus: 'pending',
+        });
+        await saveOutboxItem({
+          localOperationId: appointmentId,
+          operationType: 'insert',
+          resource: 'appointments',
+          ownerId: user.id,
+          payload: appointmentPayload,
+          createdAt: new Date(Date.parse(createdAt) + 1).toISOString(),
+          retryCount: 0,
+          syncStatus: 'pending',
+        });
+      } catch (error) {
+        try {
+          await deleteRecord('outbox', triageId);
+        } catch {
+          // Keep the UI error focused on the failed local save.
+        }
+        setBookingError(error instanceof Error ? error.message : t('unableCreateAppointment'));
+        setSubmitting(false);
+        return;
+      }
+
+      setBookedAppointment({ facilityName, doctorName, appointmentDate: appointmentDate.toISOString(), offline: true });
+      setSubmitting(false);
+      return;
+    }
+
     if (!triageSaved) {
       const { error: triageError } = await supabaseClient.from('triage_assessments').insert({
         patient_id: patientId,
@@ -187,9 +289,10 @@ export default function PatientAppointmentBookingPage() {
     }
 
     setBookedAppointment({
-      facilityName: facilities.find((facility) => facility.id === facilityId)?.name ?? t('notAssigned'),
-      doctorName: doctors.find((doctor) => doctor.id === doctorId)?.name ?? t('notAssigned'),
+      facilityName,
+      doctorName,
       appointmentDate: appointmentDate.toISOString(),
+      offline: false,
     });
     setSubmitting(false);
   };
@@ -221,6 +324,7 @@ export default function PatientAppointmentBookingPage() {
             <CardDescription>{t('appointmentDetails')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
+            {bookedAppointment.offline && <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-warning-foreground" role="status">{t('appointmentSavedOffline')}</div>}
             <Detail label={t('facility')} value={bookedAppointment.facilityName} />
             <Detail label={t('doctor')} value={bookedAppointment.doctorName} />
             <Detail label={t('dateAndTime')} value={formatAppointmentDate(bookedAppointment.appointmentDate)} />
@@ -238,6 +342,8 @@ export default function PatientAppointmentBookingPage() {
         <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('bookAppointment')}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{t('bookAndView')}</p>
       </div>
+
+      {syncNotice && <div className="mb-6 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success" role="status">{syncNotice}</div>}
 
       {(formError || bookingError) && (
         <div className="mb-6 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive" role="alert">

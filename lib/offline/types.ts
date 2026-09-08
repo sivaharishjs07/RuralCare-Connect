@@ -7,6 +7,7 @@ export type OutboxItem = {
   operationType: OutboxOperationType;
   resource: string;
   payload: unknown;
+  ownerId?: string;
   createdAt: string;
   retryCount: number;
   syncStatus: OutboxSyncStatus;
