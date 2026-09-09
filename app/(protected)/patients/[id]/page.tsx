@@ -264,9 +264,9 @@ export default function PatientProfilePage() {
         const results = await Promise.all([
           supabaseClient.from('health_records').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
           supabaseClient.from('triage_assessments').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
-          supabaseClient.from('appointments').select('*').eq('patient_id', patientId).order('scheduled_time', { ascending: false }),
-          supabaseClient.from('referrals').select('*').eq('patient_id', patientId).order('referred_at', { ascending: false }),
-          supabaseClient.from('follow_ups').select('*').eq('patient_id', patientId).order('scheduled_date', { ascending: false }),
+          supabaseClient.from('appointments').select('*').eq('patient_id', patientId).order('appointment_date', { ascending: false }),
+          supabaseClient.from('referrals').select('*').eq('patient_id', patientId).order('referral_date', { ascending: false }),
+          supabaseClient.from('follow_ups').select('*').eq('patient_id', patientId).order('follow_up_date', { ascending: false }),
           registeredBy
             ? supabaseClient.from('profiles').select('full_name, role').eq('id', registeredBy).maybeSingle()
             : Promise.resolve({ data: null, error: null }),

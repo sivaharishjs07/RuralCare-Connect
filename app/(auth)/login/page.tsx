@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { HeartPulse, Mail, Lock, Loader2, AlertCircle, ArrowRight } from 'lucide-react';
 import { supabaseClient } from '@/lib/supabase/client';
@@ -145,7 +146,10 @@ export default function LoginPage() {
                 </>
               )}
             </button>
-          </form>
+            </form>
+            <p className="mt-5 text-center text-sm text-muted-foreground">
+              New patient? <Link href="/signup" className="font-semibold text-primary hover:underline">Create an account</Link>
+            </p>
         </div>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">

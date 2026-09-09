@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Activity,
   Bell,
@@ -21,6 +21,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { ROLE_LABELS } from '@/lib/auth/roles';
 import { cn } from '@/lib/utils';
 import { ConnectivityStatus } from '@/components/layout/connectivity-status';
+import { usePatientLanguage, type PatientLanguage } from '@/lib/i18n/patient-language';
+import { supabaseClient } from '@/lib/supabase/client';
 
 const navigationItems = [
   { label: 'Dashboard', href: '/dashboard', icon: Activity },
@@ -42,6 +44,18 @@ const patientBookingItem = {
 
 function UserSummary() {
   const { profile, user } = useAuth();
+  const { language, setLanguage, t } = usePatientLanguage();
+
+  useEffect(() => {
+    if (profile?.language === 'en' || profile?.language === 'mr' || profile?.language === 'hi') setLanguage(profile.language);
+  }, [profile?.language, setLanguage]);
+
+  const changeLanguage = (nextLanguage: PatientLanguage) => {
+    setLanguage(nextLanguage);
+    if (user && navigator.onLine) {
+      void supabaseClient.from('profiles').update({ language: nextLanguage } as never).eq('id', user.id);
+    }
+  };
   const name = profile?.full_name ?? 'User';
   const initials = name.charAt(0).toUpperCase();
 
@@ -154,6 +168,20 @@ function Sidebar({ mobile = false, onClose }: { mobile?: boolean; onClose?: () =
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { profile, user } = useAuth();
+  const { language, setLanguage, t } = usePatientLanguage();
+
+  useEffect(() => {
+    if (profile?.language === 'en' || profile?.language === 'mr' || profile?.language === 'hi') {
+      setLanguage(profile.language);
+    }
+  }, [profile?.language, setLanguage]);
+
+  const changeLanguage = (nextLanguage: PatientLanguage) => {
+    setLanguage(nextLanguage);
+    if (user && navigator.onLine) {
+      void supabaseClient.from('profiles').update({ language: nextLanguage } as never).eq('id', user.id);
+    }
+  };
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -182,6 +210,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <select value={language} onChange={(event) => changeLanguage(event.target.value as PatientLanguage)} aria-label={t('language')} className="h-9 rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground">
+              <option value="en">English</option>
+              <option value="mr">मराठी</option>
+              <option value="hi">हिन्दी</option>
+            </select>
             <ConnectivityStatus />
             <div className="hidden items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 sm:flex">
               <span className="h-1.5 w-1.5 rounded-full bg-success" />
