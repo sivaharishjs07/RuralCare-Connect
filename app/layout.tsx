@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google';
 import { Toaster } from '@/components/ui/toaster';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { PwaRegistration } from '@/components/layout/pwa-registration';
+import { PatientLanguageProvider } from '@/lib/i18n/patient-language';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -28,9 +29,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <AuthProvider>
-          {children}
-        </AuthProvider>
+        <PatientLanguageProvider>
+          <AuthProvider>
+            {children}
+          </AuthProvider>
+        </PatientLanguageProvider>
         <PwaRegistration />
         <Toaster />
       </body>

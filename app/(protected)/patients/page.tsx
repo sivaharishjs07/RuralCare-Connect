@@ -21,6 +21,8 @@ import {
 import { useAuth } from '@/hooks/use-auth';
 import { isHealthcareStaff } from '@/lib/auth/roles';
 import { supabaseClient } from '@/lib/supabase/client';
+import { OFFLINE_STORES, getCachedRecords, replaceCachedRecords, saveOutboxItem, saveRecord } from '@/lib/offline/indexed-db';
+import { syncPendingPatientAppointments } from '@/lib/offline/appointment-sync';
 import type { Patient } from '@/lib/types/database';
 import { Button } from '@/components/ui/button';
 import {
@@ -59,6 +61,14 @@ const emptyForm: PatientForm = {
   emergency_contact_name: '',
   emergency_contact_phone: '',
 };
+
+function createLocalId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function toForm(patient: Patient): PatientForm {
   return {
@@ -369,16 +379,39 @@ export default function PatientsPage() {
     setLoading(true);
     setLoadError(null);
 
-    const { data, error } = await supabaseClient
-      .from('patients')
-      .select('*')
-      .order('created_at', { ascending: false });
+    if (!navigator.onLine) {
+      try {
+        const cached = await getCachedRecords<Patient>(OFFLINE_STORES.patient_cache);
+        setPatients(cached.filter((patient) => role === 'admin' || role === 'doctor' || (role === 'patient' && patient.profile_id === user?.id) || (role === 'health_worker' && patient.assigned_health_worker_id === user?.id)));
+      } catch {
+        setPatients([]);
+        setLoadError('Offline patient records are not available in the local cache yet.');
+      }
+      setLoading(false);
+      return;
+    }
+
+    let patientQuery = supabaseClient.from('patients').select('*').order('created_at', { ascending: false });
+    if (role === 'patient') patientQuery = patientQuery.eq('profile_id', user?.id ?? '');
+    if (role === 'health_worker') patientQuery = patientQuery.eq('assigned_health_worker_id', user?.id ?? '');
+    const { data, error } = await patientQuery;
 
     if (error) {
+      try {
+        const cached = await getCachedRecords<Patient>(OFFLINE_STORES.patient_cache);
+        setPatients(cached.filter((patient) => role === 'admin' || role === 'doctor' || (role === 'patient' && patient.profile_id === user?.id) || (role === 'health_worker' && patient.assigned_health_worker_id === user?.id)));
+      } catch {
+        setPatients([]);
+      }
       setLoadError(error.message);
-      setPatients([]);
     } else {
-      setPatients((data ?? []) as Patient[]);
+      const patientList = (data ?? []) as Patient[];
+      setPatients(patientList);
+      try {
+        await replaceCachedRecords(OFFLINE_STORES.patient_cache, patientList);
+      } catch {
+        // Keep the online session working even if the cache write fails.
+      }
     }
 
     setLoading(false);
@@ -501,6 +534,40 @@ export default function PatientsPage() {
       return;
     }
 
+    if (editingPatient && !navigator.onLine) {
+      const now = new Date().toISOString();
+      const updatedPatient: Patient = {
+        ...editingPatient,
+        ...values,
+        updated_at: now,
+      };
+
+      try {
+        await saveRecord(OFFLINE_STORES.patient_cache, updatedPatient);
+        await saveOutboxItem({
+          localOperationId: createLocalId(),
+          operationType: 'update',
+          resource: 'patients',
+          ownerId: user.id,
+          payload: updatedPatient,
+          createdAt: now,
+          retryCount: 0,
+          syncStatus: 'pending',
+        });
+        setPatients((current) => current.map((patient) => (
+          patient.id === updatedPatient.id ? updatedPatient : patient
+        )));
+        setNotice('Patient information saved offline. It will sync automatically when internet connection is restored.');
+        setFormOpen(false);
+        setEditingPatient(null);
+        setForm(emptyForm);
+      } catch (error) {
+        setFormError(error instanceof Error ? error.message : 'Unable to save the patient update offline.');
+      }
+      setSaving(false);
+      return;
+    }
+
     const result = editingPatient
       ? await supabaseClient
           .from('patients')
@@ -513,6 +580,10 @@ export default function PatientsPage() {
     if (result.error) {
       setFormError(result.error.message);
     } else {
+      if (editingPatient) {
+        const updatedPatient = { ...editingPatient, ...values, updated_at: new Date().toISOString() };
+        await saveRecord(OFFLINE_STORES.patient_cache, updatedPatient);
+      }
       setNotice(
         editingPatient
           ? 'Patient information updated successfully.'
@@ -524,6 +595,9 @@ export default function PatientsPage() {
       setForm(emptyForm);
 
       await loadPatients();
+      if (navigator.onLine && user) {
+        void syncPendingPatientAppointments(user.id);
+      }
     }
 
     setSaving(false);

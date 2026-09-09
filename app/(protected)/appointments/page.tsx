@@ -22,6 +22,7 @@ import {
 import { useAuth } from '@/hooks/use-auth';
 import { isHealthcareStaff } from '@/lib/auth/roles';
 import { supabaseClient } from '@/lib/supabase/client';
+import { OFFLINE_STORES, getCachedRecords, replaceCachedRecords, saveOutboxItem, saveRecord } from '@/lib/offline/indexed-db';
 import type { Appointment, Facility, Patient, Profile } from '@/lib/types/database';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -50,6 +51,12 @@ const emptyForm: AppointmentForm = {
   queueNumber: '',
   reason: '',
 };
+
+function createLocalId() {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 const statusOptions: { value: AppointmentStatus; label: string }[] = [
   { value: 'scheduled', label: 'Scheduled' },
@@ -151,10 +158,10 @@ function AppointmentCard({ appointment, patientName, doctorName, facilityName, c
     <Card className="transition-shadow hover:shadow-md">
       <CardContent className="p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex min-w-0 items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></div><div className="min-w-0"><h3 className="truncate font-semibold text-foreground">{patientName}</h3><p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><Clock3 className="h-3.5 w-3.5" />{formatDateTime(appointment.scheduled_time)}</p></div></div>
+          <div className="flex min-w-0 items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></div><div className="min-w-0"><h3 className="truncate font-semibold text-foreground">{patientName}</h3><p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><Clock3 className="h-3.5 w-3.5" />{formatDateTime(appointment.appointment_date)}</p></div></div>
           <span className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-bold ${statusClasses(appointment.status)}`}>{statusLabel(appointment.status)}</span>
         </div>
-        <div className="mt-5 grid gap-3 border-t border-border/70 pt-4 text-sm sm:grid-cols-2"><div className="flex items-start gap-2 text-muted-foreground"><Stethoscope className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{doctorName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{facilityName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><span className="flex h-4 min-w-4 items-center justify-center rounded bg-muted px-1 text-[10px] font-bold text-foreground">{appointment.queue_number ?? '—'}</span><span>Queue number</span></div><div className="flex items-start gap-2 text-muted-foreground"><FileTextIcon /><span>{appointment.reason || 'No notes or reason recorded'}</span></div></div>
+        <div className="mt-5 grid gap-3 border-t border-border/70 pt-4 text-sm sm:grid-cols-2"><div className="flex items-start gap-2 text-muted-foreground"><Stethoscope className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{doctorName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{facilityName}</span></div><div className="flex items-start gap-2 text-muted-foreground"><span className="flex h-4 min-w-4 items-center justify-center rounded bg-muted px-1 text-[10px] font-bold text-foreground">{appointment.queue_number ?? '—'}</span><span>Queue number</span></div><div className="flex items-start gap-2 text-muted-foreground"><FileTextIcon /><span>{appointment.notes || 'No notes or reason recorded'}</span></div></div>
         {canManage && <div className="mt-4 flex flex-wrap gap-2 border-t border-border/70 pt-4"><span className="mr-1 self-center text-xs font-medium text-muted-foreground">Update status:</span>{(['checked_in', 'completed', 'cancelled', 'no_show'] as AppointmentStatus[]).map((status) => <Button key={status} type="button" variant="outline" size="sm" disabled={updating || appointment.status === status} onClick={() => onStatusChange(appointment, status)}>{updating && appointment.status !== status && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{statusLabel(status)}</Button>)}</div>}
       </CardContent>
     </Card>
@@ -186,20 +193,75 @@ export default function AppointmentsPage() {
   const loadData = async () => {
     setLoading(true);
     setError(null);
+
+    if (!navigator.onLine) {
+      try {
+        const [cachedAppointments, cachedPatients, cachedDoctors, cachedFacilities] = await Promise.all([
+          getCachedRecords<Appointment>(OFFLINE_STORES.appointment_cache),
+          getCachedRecords<Patient>(OFFLINE_STORES.patient_cache),
+          getCachedRecords<Profile>(OFFLINE_STORES.profile_cache),
+          getCachedRecords<Facility>(OFFLINE_STORES.facility_cache),
+        ]);
+        setAppointments(cachedAppointments);
+        setPatients(cachedPatients);
+        setDoctors(cachedDoctors.filter((person) => person.role === 'doctor'));
+        setFacilities(cachedFacilities);
+      } catch {
+        setAppointments([]);
+        setPatients([]);
+        setDoctors([]);
+        setFacilities([]);
+        setError('Offline appointment data is not available in the local cache yet.');
+      }
+      setLoading(false);
+      return;
+    }
+
     const [appointmentResult, patientResult, doctorResult, facilityResult] = await Promise.all([
-      supabaseClient.from('appointments').select('*').order('scheduled_time', { ascending: true }),
+      supabaseClient.from('appointments').select('*').order('appointment_date', { ascending: true }),
       supabaseClient.from('patients').select('*').order('full_name', { ascending: true }),
       supabaseClient.from('profiles').select('*').eq('role', 'doctor').order('full_name', { ascending: true }),
       supabaseClient.from('facilities').select('*').order('name', { ascending: true }),
     ]);
     const coreFailure = appointmentResult.error ?? patientResult.error;
     if (coreFailure) {
+      try {
+        const [cachedAppointments, cachedPatients, cachedDoctors, cachedFacilities] = await Promise.all([
+          getCachedRecords<Appointment>(OFFLINE_STORES.appointment_cache),
+          getCachedRecords<Patient>(OFFLINE_STORES.patient_cache),
+          getCachedRecords<Profile>(OFFLINE_STORES.profile_cache),
+          getCachedRecords<Facility>(OFFLINE_STORES.facility_cache),
+        ]);
+        setAppointments(cachedAppointments);
+        setPatients(cachedPatients);
+        setDoctors(cachedDoctors.filter((person) => person.role === 'doctor'));
+        setFacilities(cachedFacilities);
+      } catch {
+        setAppointments([]);
+        setPatients([]);
+        setDoctors([]);
+        setFacilities([]);
+      }
       setError(coreFailure.message);
     } else {
-      setAppointments((appointmentResult.data ?? []) as Appointment[]);
-      setPatients((patientResult.data ?? []) as Patient[]);
-      setDoctors(doctorResult.error ? [] : (doctorResult.data ?? []) as Profile[]);
-      setFacilities(facilityResult.error ? [] : (facilityResult.data ?? []) as Facility[]);
+      const nextAppointments = (appointmentResult.data ?? []) as Appointment[];
+      const nextPatients = (patientResult.data ?? []) as Patient[];
+      const nextDoctors = (doctorResult.data ?? []) as Profile[];
+      const nextFacilities = (facilityResult.data ?? []) as Facility[];
+      setAppointments(nextAppointments);
+      setPatients(nextPatients);
+      setDoctors(nextDoctors);
+      setFacilities(nextFacilities);
+      try {
+        await Promise.all([
+          replaceCachedRecords(OFFLINE_STORES.appointment_cache, nextAppointments),
+          replaceCachedRecords(OFFLINE_STORES.patient_cache, nextPatients),
+          replaceCachedRecords(OFFLINE_STORES.profile_cache, nextDoctors),
+          replaceCachedRecords(OFFLINE_STORES.facility_cache, nextFacilities),
+        ]);
+      } catch {
+        // Keep the online UI running even if cache writes fail.
+      }
     }
     setLoading(false);
   };
@@ -211,8 +273,8 @@ export default function AppointmentsPage() {
   const facilityNames = useMemo(() => new Map(facilities.map((facility) => [facility.id, facility.name])), [facilities]);
   const filteredAppointments = useMemo(() => appointments.filter((appointment) => {
     const patientName = patientNames.get(appointment.patient_id) ?? '';
-    const matchesSearch = !search.trim() || patientName.toLowerCase().includes(search.trim().toLowerCase()) || appointment.reason?.toLowerCase().includes(search.trim().toLowerCase());
-    return matchesSearch && (statusFilter === 'all' || appointment.status === statusFilter) && (facilityFilter === 'all' || appointment.facility_id === facilityFilter) && (!dateFilter || dateKey(appointment.scheduled_time) === dateFilter);
+    const matchesSearch = !search.trim() || patientName.toLowerCase().includes(search.trim().toLowerCase()) || appointment.notes?.toLowerCase().includes(search.trim().toLowerCase());
+    return matchesSearch && (statusFilter === 'all' || appointment.status === statusFilter) && (facilityFilter === 'all' || appointment.facility_id === facilityFilter) && (!dateFilter || dateKey(appointment.appointment_date) === dateFilter);
   }), [appointments, dateFilter, facilityFilter, patientNames, search, statusFilter]);
   const queueAppointments = filteredAppointments.filter((appointment) => appointment.queue_number !== null).sort((first, second) => (first.queue_number ?? 0) - (second.queue_number ?? 0));
 
@@ -226,7 +288,22 @@ export default function AppointmentsPage() {
     if (!form.patientId || !form.scheduledTime) { setFormError('Select a patient and appointment date and time.'); setSaving(false); return; }
     const queueNumber = form.queueNumber ? Number(form.queueNumber) : null;
     if (queueNumber !== null && (!Number.isInteger(queueNumber) || queueNumber < 1)) { setFormError('Queue number must be a positive whole number.'); setSaving(false); return; }
-    const { error: saveError } = await supabaseClient.from('appointments').insert({ patient_id: form.patientId, healthcare_worker_id: form.doctorId || null, facility_id: form.facilityId || null, scheduled_time: new Date(form.scheduledTime).toISOString(), status: form.status, queue_number: queueNumber, reason: form.reason.trim() || null } as never);
+    const appointmentId = createLocalId();
+    const appointmentPayload = { id: appointmentId, patient_id: form.patientId, doctor_id: form.doctorId || null, facility_id: form.facilityId || null, appointment_date: new Date(form.scheduledTime).toISOString(), status: form.status, queue_number: queueNumber, notes: form.reason.trim() || null };
+    if (!navigator.onLine) {
+      try {
+        await saveOutboxItem({ localOperationId: appointmentId, operationType: 'insert', resource: 'appointments', ownerId: user.id, payload: appointmentPayload, createdAt: new Date().toISOString(), retryCount: 0, syncStatus: 'pending' });
+        await saveRecord(OFFLINE_STORES.appointment_cache, appointmentPayload);
+        setAppointments((current) => [...current, appointmentPayload as Appointment]);
+        setNotice('Appointment saved offline. It will sync when the connection returns.');
+        setForm(emptyForm); setFormOpen(false);
+      } catch (offlineError) {
+        setFormError(offlineError instanceof Error ? offlineError.message : 'Unable to save the appointment offline.');
+      }
+      setSaving(false);
+      return;
+    }
+    const { error: saveError } = await supabaseClient.from('appointments').insert(appointmentPayload as never);
     if (saveError) setFormError(saveError.message);
     else { setNotice('Appointment created successfully.'); setForm(emptyForm); setFormOpen(false); await loadData(); }
     setSaving(false);
@@ -253,12 +330,12 @@ export default function AppointmentsPage() {
           <div className="flex items-end justify-between"><div><h2 className="text-lg font-semibold text-foreground">Appointment list</h2><p className="text-sm text-muted-foreground">{loading ? 'Loading records...' : `${filteredAppointments.length} appointment${filteredAppointments.length === 1 ? '' : 's'} shown`}</p></div></div>
           {loading && !error && <div className="flex min-h-48 items-center justify-center rounded-lg border border-border/70 bg-card"><Loader2 className="h-6 w-6 animate-spin text-primary" /><span className="ml-2 text-sm text-muted-foreground">Loading appointments...</span></div>}
           {!loading && !error && filteredAppointments.length === 0 && <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card px-6 text-center"><CalendarDays className="h-8 w-8 text-muted-foreground/60" /><h3 className="mt-3 font-semibold text-foreground">No appointments scheduled yet.</h3><p className="mt-1 max-w-sm text-sm text-muted-foreground">{search || dateFilter || statusFilter !== 'all' || facilityFilter !== 'all' ? 'Try clearing or changing the filters.' : canManage ? 'Create an appointment to start managing the queue.' : 'Appointments available to your account will appear here.'}</p></div>}
-          {!loading && !error && filteredAppointments.length > 0 && <div className="space-y-4">{filteredAppointments.map((appointment) => <AppointmentCard key={appointment.id} appointment={appointment} patientName={patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'} doctorName={appointment.healthcare_worker_id ? doctorNames.get(appointment.healthcare_worker_id) ?? 'Assigned clinician' : 'Doctor not assigned'} facilityName={appointment.facility_id ? facilityNames.get(appointment.facility_id) ?? 'Assigned facility' : 'Facility not assigned'} canManage={canManage} updating={updatingId === appointment.id} onStatusChange={changeStatus} />)}</div>}
+          {!loading && !error && filteredAppointments.length > 0 && <div className="space-y-4">{filteredAppointments.map((appointment) => <AppointmentCard key={appointment.id} appointment={appointment} patientName={patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'} doctorName={appointment.doctor_id ? doctorNames.get(appointment.doctor_id) ?? 'Assigned clinician' : 'Doctor not assigned'} facilityName={appointment.facility_id ? facilityNames.get(appointment.facility_id) ?? 'Assigned facility' : 'Facility not assigned'} canManage={canManage} updating={updatingId === appointment.id} onStatusChange={changeStatus} />)}</div>}
         </section>
         <aside className="space-y-6">
           {formOpen && canManage && <AppointmentForm patients={patients} doctors={doctors} facilities={facilities} form={form} saving={saving} error={formError} onChange={updateField} onSubmit={saveAppointment} onCancel={() => { if (!saving) { setFormOpen(false); setFormError(null); } }} />}
           {!formOpen && canManage && <Card className="hidden border-dashed border-border/80 bg-card/50 lg:block"><CardContent className="flex flex-col items-center px-6 py-10 text-center"><CalendarDays className="h-8 w-8 text-primary/70" /><h2 className="mt-4 font-semibold text-foreground">Schedule a visit</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Create appointments with existing patients, clinicians, and facilities.</p><Button type="button" variant="outline" onClick={() => setFormOpen(true)} className="mt-5"><Plus className="mr-2 h-4 w-4" />New Appointment</Button></CardContent></Card>}
-          <Card><CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Users className="h-5 w-5 text-primary" />Queue view</CardTitle><CardDescription>{dateFilter ? `Queue for ${dateFilter}` : 'Select a date filter to focus the queue.'}</CardDescription></CardHeader><CardContent>{queueAppointments.length === 0 ? <p className="rounded-md bg-muted/40 px-3 py-4 text-center text-sm text-muted-foreground">No queued appointments for the current filters.</p> : <div className="space-y-3">{queueAppointments.map((appointment) => <div key={appointment.id} className="flex items-start gap-3 rounded-md border border-border/70 p-3"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground">{appointment.queue_number}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'}</p><p className="mt-1 text-xs text-muted-foreground">{formatDateTime(appointment.scheduled_time)}</p><span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(appointment.status)}`}>{statusLabel(appointment.status)}</span></div></div>)}</div>}</CardContent></Card>
+          <Card><CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Users className="h-5 w-5 text-primary" />Queue view</CardTitle><CardDescription>{dateFilter ? `Queue for ${dateFilter}` : 'Select a date filter to focus the queue.'}</CardDescription></CardHeader><CardContent>{queueAppointments.length === 0 ? <p className="rounded-md bg-muted/40 px-3 py-4 text-center text-sm text-muted-foreground">No queued appointments for the current filters.</p> : <div className="space-y-3">{queueAppointments.map((appointment) => <div key={appointment.id} className="flex items-start gap-3 rounded-md border border-border/70 p-3"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground">{appointment.queue_number}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{patientNames.get(appointment.patient_id) ?? 'Patient record unavailable'}</p><p className="mt-1 text-xs text-muted-foreground">{formatDateTime(appointment.appointment_date)}</p><span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(appointment.status)}`}>{statusLabel(appointment.status)}</span></div></div>)}</div>}</CardContent></Card>
         </aside>
       </div>
     </div>

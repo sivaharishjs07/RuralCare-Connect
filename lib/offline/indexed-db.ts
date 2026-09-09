@@ -1,16 +1,32 @@
 import type { OutboxItem } from '@/lib/offline/types';
 
 const DATABASE_NAME = 'ruralcare-offline';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 3;
 
 export const OFFLINE_STORES = {
   outbox: 'outbox',
+  patient_cache: 'patient_cache',
+  appointment_cache: 'appointment_cache',
+  facility_cache: 'facility_cache',
+  profile_cache: 'profile_cache',
+  health_record_cache: 'health_record_cache',
+  triage_cache: 'triage_cache',
+  referral_cache: 'referral_cache',
+  follow_up_cache: 'follow_up_cache',
 } as const;
 
 export type OfflineStoreName = (typeof OFFLINE_STORES)[keyof typeof OFFLINE_STORES];
 
 const STORE_KEY_PATHS: Record<OfflineStoreName, string> = {
   outbox: 'localOperationId',
+  patient_cache: 'id',
+  appointment_cache: 'id',
+  facility_cache: 'id',
+  profile_cache: 'id',
+  health_record_cache: 'id',
+  triage_cache: 'id',
+  referral_cache: 'id',
+  follow_up_cache: 'id',
 };
 
 export class IndexedDbUnavailableError extends Error {
@@ -148,6 +164,30 @@ export function deleteRecord(
 
 export function clearStore(storeName: OfflineStoreName): Promise<void> {
   return runRequest(storeName, 'readwrite', (store) => store.clear()).then(() => undefined);
+}
+
+export async function saveCachedRecords<T extends { id: string }>(storeName: Exclude<OfflineStoreName, 'outbox'>, records: T[]): Promise<void> {
+  for (const record of records) {
+    await saveRecord(storeName, record);
+  }
+}
+
+export function getCachedRecords<T extends { id: string }>(storeName: Exclude<OfflineStoreName, 'outbox'>): Promise<T[]> {
+  return getAllRecords<T>(storeName);
+}
+
+export function getCachedRecord<T extends { id: string }>(storeName: Exclude<OfflineStoreName, 'outbox'>, id: string): Promise<T | undefined> {
+  return getRecord<T>(storeName, id);
+}
+
+export async function replaceCachedRecords<T extends { id: string }>(storeName: Exclude<OfflineStoreName, 'outbox'>, records: T[]): Promise<void> {
+  const existing = await getCachedRecords<T>(storeName);
+  for (const record of existing) {
+    await deleteRecord(storeName, record.id);
+  }
+  for (const record of records) {
+    await saveRecord(storeName, record);
+  }
 }
 
 export function saveOutboxItem(item: OutboxItem): Promise<void> {

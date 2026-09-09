@@ -34,46 +34,66 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchProfile = useCallback(async (userId: string) => {
     setProfileError(null);
-    const { data, error } = await supabaseClient
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
 
-    if (error) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (error) {
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          return;
+        }
+        setProfile(null);
+        setProfileError('Unable to retrieve your profile. Please try again.');
+        return;
+      }
+
+      if (!data) {
+        setProfile(null);
+        setProfileError(
+          'Your account is authenticated, but no application profile was found. Please contact your administrator to be assigned a role.'
+        );
+        return;
+      }
+
+      setProfile(data as Profile);
+      setProfileError(null);
+    } catch {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return;
+      }
       setProfile(null);
       setProfileError('Unable to retrieve your profile. Please try again.');
-      return;
     }
-
-    if (!data) {
-      setProfile(null);
-      setProfileError(
-        'Your account is authenticated, but no application profile was found. Please contact your administrator to be assigned a role.'
-      );
-      return;
-    }
-
-    setProfile(data as Profile);
-    setProfileError(null);
   }, []);
 
   useEffect(() => {
     let mounted = true;
 
-    supabaseClient.auth.getSession().then(({ data: { session: initialSession } }) => {
-      if (!mounted) return;
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
+    supabaseClient.auth.getSession()
+      .then(({ data: { session: initialSession } }) => {
+        if (!mounted) return;
+        setSession(initialSession);
+        setUser(initialSession?.user ?? null);
 
-      if (initialSession?.user) {
-        fetchProfile(initialSession.user.id).finally(() => {
-          if (mounted) setLoading(false);
-        });
-      } else {
-        setLoading(false);
-      }
-    });
+        if (initialSession?.user) {
+          fetchProfile(initialSession.user.id).finally(() => {
+            if (mounted) setLoading(false);
+          });
+        } else {
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+        }
+      });
 
     const { data: authListener } = supabaseClient.auth.onAuthStateChange(
       (event, newSession) => {

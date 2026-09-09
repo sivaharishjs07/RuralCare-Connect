@@ -33,16 +33,16 @@ function formatDateTime(value: string | null) {
 }
 
 function isLowStock(inventory: FacilityMedicineInventory) {
-  return inventory.minimum_stock_level !== null && inventory.quantity <= inventory.minimum_stock_level;
+  return inventory.minimum_stock !== null && inventory.available_quantity <= inventory.minimum_stock;
 }
 
 function stockLabel(inventory: FacilityMedicineInventory) {
-  if (inventory.minimum_stock_level === null) return 'Threshold unavailable';
+  if (inventory.minimum_stock === null) return 'Threshold unavailable';
   return isLowStock(inventory) ? 'Low stock' : 'Normal stock';
 }
 
 function stockClasses(inventory: FacilityMedicineInventory) {
-  if (inventory.minimum_stock_level === null) return 'border-border bg-muted text-muted-foreground';
+  if (inventory.minimum_stock === null) return 'border-border bg-muted text-muted-foreground';
   return isLowStock(inventory)
     ? 'border-warning/40 bg-warning/10 text-warning-foreground'
     : 'border-success/30 bg-success/10 text-success';
@@ -81,7 +81,7 @@ function InventoryUpdateForm({
           {error && <div className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><span>{error}</span></div>}
           <div className="space-y-2">
             <Label htmlFor="inventory-quantity">Available quantity</Label>
-            <Input id="inventory-quantity" name="quantity" type="number" min="0" step="1" defaultValue={inventory.quantity} required autoFocus />
+            <Input id="inventory-quantity" name="quantity" type="number" min="0" step="1" defaultValue={inventory.available_quantity} required autoFocus />
           </div>
           <p className="text-xs leading-relaxed text-muted-foreground">Only the existing quantity field will be changed. Permission checks remain enforced by Supabase RLS.</p>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="submit" disabled={saving}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Save quantity</Button></div>
@@ -96,10 +96,10 @@ function InventoryCard({ inventory, medicine, facilityName, canManage, onEdit }:
     <Card className="transition-shadow hover:shadow-md">
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Package className="h-5 w-5" /></div><div className="min-w-0"><h2 className="truncate font-semibold text-foreground">{medicine?.name ?? 'Medicine record unavailable'}</h2><p className="mt-1 text-xs text-muted-foreground">{medicine?.generic_name || 'Generic name not provided'}</p></div></div>
+          <div className="flex min-w-0 items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Package className="h-5 w-5" /></div><div className="min-w-0"><h2 className="truncate font-semibold text-foreground">{medicine?.name ?? 'Medicine record unavailable'}</h2><p className="mt-1 text-xs text-muted-foreground">{medicine?.manufacturer || 'Manufacturer not provided'}</p></div></div>
           {canManage && <Button type="button" variant="ghost" size="icon" onClick={() => onEdit(inventory)} aria-label={`Update quantity for ${medicine?.name ?? 'medicine'}`}><Pencil className="h-4 w-4" /></Button>}
         </div>
-        <div className="mt-5 grid gap-4 border-t border-border/70 pt-4 text-sm sm:grid-cols-2"><div className="flex items-start gap-2 text-muted-foreground"><Hospital className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{facilityName}</span></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Category</p><p className="mt-1 text-foreground">{medicine?.category || 'Not provided'}</p></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Available quantity</p><p className="mt-1 text-lg font-bold text-foreground">{inventory.quantity} <span className="text-xs font-medium text-muted-foreground">{medicine?.unit || 'units'}</span></p></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Minimum stock level</p><p className="mt-1 text-foreground">{inventory.minimum_stock_level ?? 'Not provided'}</p></div></div>
+        <div className="mt-5 grid gap-4 border-t border-border/70 pt-4 text-sm sm:grid-cols-2"><div className="flex items-start gap-2 text-muted-foreground"><Hospital className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><span>{facilityName}</span></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Category</p><p className="mt-1 text-foreground">{medicine?.category || 'Not provided'}</p></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Available quantity</p><p className="mt-1 text-lg font-bold text-foreground">{inventory.available_quantity} <span className="text-xs font-medium text-muted-foreground">units</span></p></div><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Minimum stock level</p><p className="mt-1 text-foreground">{inventory.minimum_stock ?? 'Not provided'}</p></div></div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-4"><span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${stockClasses(inventory)}`}>{stockLabel(inventory)}</span><span className="text-xs text-muted-foreground">Updated {formatDateTime(inventory.last_updated)}</span></div>
       </CardContent>
     </Card>
@@ -151,10 +151,10 @@ export default function MedicinesPage() {
   const filteredInventory = useMemo(() => inventory.filter((item) => {
     const medicine = medicineMap.get(item.medicine_id);
     const query = search.trim().toLowerCase();
-    const matchesSearch = !query || medicine?.name.toLowerCase().includes(query) || medicine?.generic_name?.toLowerCase().includes(query) || medicine?.category?.toLowerCase().includes(query);
+    const matchesSearch = !query || medicine?.name.toLowerCase().includes(query) || medicine?.manufacturer?.toLowerCase().includes(query) || medicine?.category?.toLowerCase().includes(query);
     const matchesCategory = categoryFilter === 'all' || medicine?.category === categoryFilter;
     const matchesFacility = facilityFilter === 'all' || item.facility_id === facilityFilter;
-    const matchesStock = stockFilter === 'all' || (stockFilter === 'low' && isLowStock(item)) || (stockFilter === 'normal' && item.minimum_stock_level !== null && !isLowStock(item)) || (stockFilter === 'unknown' && item.minimum_stock_level === null);
+    const matchesStock = stockFilter === 'all' || (stockFilter === 'low' && isLowStock(item)) || (stockFilter === 'normal' && item.minimum_stock !== null && !isLowStock(item)) || (stockFilter === 'unknown' && item.minimum_stock === null);
     return Boolean(matchesSearch && matchesCategory && matchesFacility && matchesStock);
   }), [categoryFilter, facilityFilter, inventory, medicineMap, search, stockFilter]);
 
@@ -174,7 +174,7 @@ export default function MedicinesPage() {
       setSaving(false);
       return;
     }
-    const { error: updateError } = await supabaseClient.from('facility_medicine_inventory').update({ quantity, updated_by: user.id } as never).eq('id', editingInventory.id);
+    const { error: updateError } = await supabaseClient.from('facility_medicine_inventory').update({ available_quantity: quantity, last_updated: new Date().toISOString() } as never).eq('id', editingInventory.id);
     if (updateError) {
       setFormError(`Unable to update inventory: ${updateError.message}`);
     } else {

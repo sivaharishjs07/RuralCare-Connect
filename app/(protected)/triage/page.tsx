@@ -23,7 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-type AssessmentSeverity = Exclude<TriageAssessment['severity'], null>;
+type AssessmentSeverity = Exclude<TriageAssessment['risk_level'], null>;
 type RiskFilter = 'all' | AssessmentSeverity;
 
 type TriageForm = {
@@ -44,9 +44,9 @@ const emptyForm: TriageForm = {
 
 const riskOptions: { value: AssessmentSeverity; label: string }[] = [
   { value: 'low', label: 'Low' },
-  { value: 'standard', label: 'Medium' },
-  { value: 'urgent', label: 'High' },
-  { value: 'critical', label: 'Emergency' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'emergency', label: 'Emergency' },
 ];
 
 function formatDate(value: string) {
@@ -62,29 +62,18 @@ function riskLabel(value: string | null) {
 
 function riskClasses(value: string | null) {
   switch (value) {
-    case 'critical':
+    case 'emergency':
       return 'border-destructive/30 bg-destructive/10 text-destructive';
-    case 'urgent':
+    case 'high':
       return 'border-warning/40 bg-warning/10 text-warning-foreground';
-    case 'standard':
+    case 'medium':
       return 'border-accent/30 bg-accent/10 text-accent';
     default:
       return 'border-success/30 bg-success/10 text-success';
   }
 }
 
-function readNotes(notes: string | null) {
-  const score = notes?.match(/^Risk score:\s*(.+)$/m)?.[1]?.trim() ?? 'Not recorded';
-  const recommendation = notes?.match(/^Recommendation:\s*([\s\S]*?)(?:\n\n|$)/m)?.[1]?.trim();
-  return {
-    score,
-    recommendation: recommendation || notes || 'Not recorded',
-  };
-}
-
 function AssessmentCard({ assessment, patientName }: { assessment: TriageAssessment; patientName: string }) {
-  const notes = readNotes(assessment.notes);
-
   return (
     <Card className="transition-shadow hover:shadow-md">
       <CardContent className="p-5">
@@ -98,22 +87,22 @@ function AssessmentCard({ assessment, patientName }: { assessment: TriageAssessm
               <p className="mt-1 text-xs text-muted-foreground">Assessed {formatDate(assessment.created_at)}</p>
             </div>
           </div>
-          <span className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-bold ${riskClasses(assessment.severity)}`}>
-            {riskLabel(assessment.severity)}
+          <span className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-bold ${riskClasses(assessment.risk_level)}`}>
+            {riskLabel(assessment.risk_level)}
           </span>
         </div>
         <div className="mt-5 grid gap-4 border-t border-border/70 pt-4 sm:grid-cols-2">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Risk score</p>
-            <p className="mt-1 text-sm font-semibold text-foreground">{notes.score}</p>
+            <p className="mt-1 text-sm font-semibold text-foreground">{assessment.risk_score ?? 'Not recorded'}</p>
           </div>
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Symptoms</p>
-            <p className="mt-1 text-sm text-foreground">{assessment.chief_complaint}</p>
+            <p className="mt-1 text-sm text-foreground">{String(assessment.symptoms ?? 'Not recorded')}</p>
           </div>
           <div className="sm:col-span-2">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recommendation</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{notes.recommendation}</p>
+            <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{assessment.recommendation ?? 'Not recorded'}</p>
           </div>
         </div>
       </CardContent>
@@ -229,7 +218,7 @@ export default function TriagePage() {
     const query = search.trim().toLowerCase();
     return assessments.filter((assessment) => {
       const matchesSearch = !query || patientNames.get(assessment.patient_id)?.toLowerCase().includes(query);
-      const matchesRisk = riskFilter === 'all' || assessment.severity === riskFilter;
+      const matchesRisk = riskFilter === 'all' || assessment.risk_level === riskFilter;
       return matchesSearch && matchesRisk;
     });
   }, [assessments, patientNames, riskFilter, search]);
@@ -253,13 +242,13 @@ export default function TriagePage() {
       setSaving(false);
       return;
     }
-    const notes = `Risk score: ${form.riskScore}\nRecommendation: ${form.recommendation.trim()}`;
     const { error: saveError } = await supabaseClient.from('triage_assessments').insert({
       patient_id: form.patientId,
-      chief_complaint: form.symptoms.trim(),
-      severity: form.severity,
-      notes,
-      assessed_by: user.id,
+      symptoms: form.symptoms.trim(),
+      risk_level: form.severity,
+      risk_score: riskScore,
+      recommendation: form.recommendation.trim(),
+      created_by: user.id,
     } as never);
     if (saveError) {
       setFormError(saveError.message);

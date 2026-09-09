@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Children, useEffect, useState, type ReactNode } from 'react';
+import { Children, FormEvent, useEffect, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { isHealthcareStaff, ROLE_LABELS } from '@/lib/auth/roles';
+import { OFFLINE_STORES, getCachedRecord, getCachedRecords, replaceCachedRecords, saveOutboxItem } from '@/lib/offline/indexed-db';
 import { supabaseClient } from '@/lib/supabase/client';
 import type {
   Appointment,
@@ -47,6 +48,41 @@ type RelatedRecords = {
   facilities: Facility[];
   assignedProfiles: Pick<Profile, 'id' | 'full_name' | 'role'>[];
 };
+
+type ConsultationForm = {
+  diagnosis: string;
+  recordType: string;
+  bloodType: string;
+  allergies: string;
+  chronicConditions: string;
+  currentMedications: string;
+  notes: string;
+};
+
+const emptyConsultationForm: ConsultationForm = {
+  diagnosis: '',
+  recordType: 'consultation',
+  bloodType: '',
+  allergies: '',
+  chronicConditions: '',
+  currentMedications: '',
+  notes: '',
+};
+
+function createLocalId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parseList(value: string) {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
 
 const emptyRelated: RelatedRecords = {
   healthRecords: [],
@@ -140,12 +176,16 @@ function RecordList({ children, emptyMessage }: { children: ReactNode; emptyMess
 
 export default function PatientProfilePage() {
   const params = useParams<{ id: string }>();
-  const { role } = useAuth();
+  const { user, role } = useAuth();
   const [patient, setPatient] = useState<Patient | null>(null);
   const [related, setRelated] = useState<RelatedRecords>(emptyRelated);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [relatedError, setRelatedError] = useState<string | null>(null);
+  const [consultationForm, setConsultationForm] = useState<ConsultationForm>(emptyConsultationForm);
+  const [consultationSaving, setConsultationSaving] = useState(false);
+  const [consultationNotice, setConsultationNotice] = useState<string | null>(null);
+  const [offlineBanner, setOfflineBanner] = useState<string | null>(null);
 
   useEffect(() => {
     const patientId = params.id;
@@ -155,51 +195,206 @@ export default function PatientProfilePage() {
       setLoading(true);
       setError(null);
       setRelatedError(null);
+      setOfflineBanner(navigator.onLine ? null : 'Offline view — showing cached patient and appointment information.');
 
-      const patientResult = await supabaseClient.from('patients').select('*').eq('id', patientId).maybeSingle();
-      if (patientResult.error) {
-        setError(patientResult.error.message);
-        setLoading(false);
-        return;
+      if (!navigator.onLine) {
+        try {
+          const [cachedPatient, cachedRecords, cachedTriage, cachedAppointments, cachedReferrals, cachedFollowUps, cachedFacilities, cachedProfiles] = await Promise.all([
+            getCachedRecord<Patient>(OFFLINE_STORES.patient_cache, patientId),
+            getCachedRecords<HealthRecord>(OFFLINE_STORES.health_record_cache),
+            getCachedRecords<TriageAssessment>(OFFLINE_STORES.triage_cache),
+            getCachedRecords<Appointment>(OFFLINE_STORES.appointment_cache),
+            getCachedRecords<Referral>(OFFLINE_STORES.referral_cache),
+            getCachedRecords<FollowUp>(OFFLINE_STORES.follow_up_cache),
+            getCachedRecords<Facility>(OFFLINE_STORES.facility_cache),
+            getCachedRecords<Profile>(OFFLINE_STORES.profile_cache),
+          ]);
+          if (!cachedPatient) {
+            setError('This patient record is not available in the offline cache yet.');
+            setLoading(false);
+            return;
+          }
+          setPatient(cachedPatient);
+          const patientHealthRecords = cachedRecords.filter((item) => item.patient_id === patientId);
+          const patientAppointments = cachedAppointments.filter((item) => item.patient_id === patientId);
+          const patientReferrals = cachedReferrals.filter((item) => item.patient_id === patientId);
+          const patientFollowUps = cachedFollowUps.filter((item) => item.patient_id === patientId);
+          const patientTriage = cachedTriage.filter((item) => item.patient_id === patientId);
+          setRelated({
+            healthRecords: patientHealthRecords,
+            triageAssessments: patientTriage,
+            appointments: patientAppointments,
+            referrals: patientReferrals,
+            followUps: patientFollowUps,
+            assignedWorker: null,
+            facilities: cachedFacilities,
+            assignedProfiles: cachedProfiles.filter((person) => person.role === 'health_worker' || person.role === 'doctor' || person.role === 'admin'),
+          });
+          setLoading(false);
+          return;
+        } catch {
+          setError('This patient record is not available in the offline cache yet.');
+          setLoading(false);
+          return;
+        }
       }
-      if (!patientResult.data) {
-        setError('This patient record could not be found or is not available to your account.');
-        setLoading(false);
-        return;
+
+      try {
+        const patientResult = await supabaseClient.from('patients').select('*').eq('id', patientId).maybeSingle();
+        if (patientResult.error) {
+          setError(patientResult.error.message);
+          setLoading(false);
+          return;
+        }
+        if (!patientResult.data) {
+          setError('This patient record could not be found or is not available to your account.');
+          setLoading(false);
+          return;
+        }
+
+        const currentPatient = patientResult.data as Patient;
+        setPatient(currentPatient);
+        try {
+          await replaceCachedRecords(OFFLINE_STORES.patient_cache, [currentPatient]);
+        } catch {
+          // do nothing; online data should still work even if cache write fails.
+        }
+
+        const registeredBy = (currentPatient as any).registered_by as string | undefined;
+        const results = await Promise.all([
+          supabaseClient.from('health_records').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
+          supabaseClient.from('triage_assessments').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
+          supabaseClient.from('appointments').select('*').eq('patient_id', patientId).order('scheduled_time', { ascending: false }),
+          supabaseClient.from('referrals').select('*').eq('patient_id', patientId).order('referred_at', { ascending: false }),
+          supabaseClient.from('follow_ups').select('*').eq('patient_id', patientId).order('scheduled_date', { ascending: false }),
+          registeredBy
+            ? supabaseClient.from('profiles').select('full_name, role').eq('id', registeredBy).maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+          supabaseClient.from('facilities').select('*').order('name', { ascending: true }),
+          supabaseClient.from('profiles').select('id, full_name, role').in('role', ['health_worker', 'doctor', 'admin']).order('full_name', { ascending: true }),
+        ]);
+
+        const failedResult = results.find((result) => result.error);
+        if (failedResult?.error) setRelatedError(failedResult.error.message);
+        const nextRelated = {
+          healthRecords: (results[0].data ?? []) as HealthRecord[],
+          triageAssessments: (results[1].data ?? []) as TriageAssessment[],
+          appointments: (results[2].data ?? []) as Appointment[],
+          referrals: (results[3].data ?? []) as Referral[],
+          followUps: (results[4].data ?? []) as FollowUp[],
+          assignedWorker: results[5].data as Pick<Profile, 'full_name' | 'role'> | null,
+          facilities: (results[6].data ?? []) as Facility[],
+          assignedProfiles: (results[7].data ?? []) as Pick<Profile, 'id' | 'full_name' | 'role'>[],
+        };
+        setRelated(nextRelated);
+        try {
+          await Promise.all([
+            replaceCachedRecords(OFFLINE_STORES.appointment_cache, nextRelated.appointments),
+            replaceCachedRecords(OFFLINE_STORES.facility_cache, nextRelated.facilities),
+            replaceCachedRecords(OFFLINE_STORES.health_record_cache, nextRelated.healthRecords),
+            replaceCachedRecords(OFFLINE_STORES.triage_cache, nextRelated.triageAssessments),
+            replaceCachedRecords(OFFLINE_STORES.referral_cache, nextRelated.referrals),
+            replaceCachedRecords(OFFLINE_STORES.follow_up_cache, nextRelated.followUps),
+            replaceCachedRecords(OFFLINE_STORES.profile_cache, nextRelated.assignedProfiles),
+          ]);
+        } catch {
+          // ignore cache write errors
+        }
+      } catch {
+        const cachedPatient = await getCachedRecord<Patient>(OFFLINE_STORES.patient_cache, patientId).catch(() => undefined);
+        if (cachedPatient) {
+          setPatient(cachedPatient);
+          const [cachedRecords, cachedTriage, cachedAppointments, cachedReferrals, cachedFollowUps, cachedFacilities, cachedProfiles] = await Promise.all([
+            getCachedRecords<HealthRecord>(OFFLINE_STORES.health_record_cache),
+            getCachedRecords<TriageAssessment>(OFFLINE_STORES.triage_cache),
+            getCachedRecords<Appointment>(OFFLINE_STORES.appointment_cache),
+            getCachedRecords<Referral>(OFFLINE_STORES.referral_cache),
+            getCachedRecords<FollowUp>(OFFLINE_STORES.follow_up_cache),
+            getCachedRecords<Facility>(OFFLINE_STORES.facility_cache),
+            getCachedRecords<Profile>(OFFLINE_STORES.profile_cache),
+          ]);
+          setRelated({
+            healthRecords: cachedRecords.filter((item) => item.patient_id === patientId),
+            triageAssessments: cachedTriage.filter((item) => item.patient_id === patientId),
+            appointments: cachedAppointments.filter((item) => item.patient_id === patientId),
+            referrals: cachedReferrals.filter((item) => item.patient_id === patientId),
+            followUps: cachedFollowUps.filter((item) => item.patient_id === patientId),
+            assignedWorker: null,
+            facilities: cachedFacilities,
+            assignedProfiles: cachedProfiles.filter((person) => person.role === 'health_worker' || person.role === 'doctor' || person.role === 'admin'),
+          });
+          setOfflineBanner('Offline view — showing cached patient and appointment information.');
+        } else {
+          setError('This patient record is not available in the offline cache yet.');
+        }
       }
-
-      const currentPatient = patientResult.data as Patient;
-      setPatient(currentPatient);
-      const results = await Promise.all([
-        supabaseClient.from('health_records').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
-        supabaseClient.from('triage_assessments').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
-        supabaseClient.from('appointments').select('*').eq('patient_id', patientId).order('scheduled_time', { ascending: false }),
-        supabaseClient.from('referrals').select('*').eq('patient_id', patientId).order('referred_at', { ascending: false }),
-        supabaseClient.from('follow_ups').select('*').eq('patient_id', patientId).order('scheduled_date', { ascending: false }),
-        currentPatient.registered_by
-          ? supabaseClient.from('profiles').select('full_name, role').eq('id', currentPatient.registered_by).maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-        supabaseClient.from('facilities').select('*').order('name', { ascending: true }),
-        supabaseClient.from('profiles').select('id, full_name, role').in('role', ['health_worker', 'doctor', 'admin']).order('full_name', { ascending: true }),
-      ]);
-
-      const failedResult = results.find((result) => result.error);
-      if (failedResult?.error) setRelatedError(failedResult.error.message);
-      setRelated({
-        healthRecords: (results[0].data ?? []) as HealthRecord[],
-        triageAssessments: (results[1].data ?? []) as TriageAssessment[],
-        appointments: (results[2].data ?? []) as Appointment[],
-        referrals: (results[3].data ?? []) as Referral[],
-        followUps: (results[4].data ?? []) as FollowUp[],
-        assignedWorker: results[5].data as Pick<Profile, 'full_name' | 'role'> | null,
-        facilities: (results[6].data ?? []) as Facility[],
-        assignedProfiles: (results[7].data ?? []) as Pick<Profile, 'id' | 'full_name' | 'role'>[],
-      });
       setLoading(false);
     };
 
     void loadProfile();
   }, [params.id]);
+
+  const saveConsultationRecord = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!user || !patient || !isHealthcareStaff(role)) return;
+
+    const diagnosis = consultationForm.diagnosis.trim();
+    const notes = consultationForm.notes.trim();
+    if (!diagnosis && !notes) {
+      setConsultationNotice('Add a diagnosis or consultation note before saving.');
+      return;
+    }
+
+    setConsultationSaving(true);
+    setConsultationNotice(null);
+
+    const recordId = createLocalId();
+    const now = new Date().toISOString();
+    const payload = {
+      id: recordId,
+      patient_id: patient.id,
+      facility_id: patient.facility_id ?? null,
+      record_type: consultationForm.recordType || 'consultation',
+      diagnosis: diagnosis || null,
+      blood_type: consultationForm.bloodType.trim() || null,
+      allergies: parseList(consultationForm.allergies),
+      chronic_conditions: parseList(consultationForm.chronicConditions),
+      current_medications: parseList(consultationForm.currentMedications),
+      notes: notes || null,
+      recorded_by: user.id,
+      created_at: now,
+      updated_at: now,
+    } satisfies Partial<HealthRecord> & { id: string; patient_id: string; recorded_by: string };
+
+    if (!navigator.onLine) {
+      await saveOutboxItem({
+        localOperationId: recordId,
+        operationType: 'insert',
+        resource: 'health_records',
+        ownerId: user.id,
+        payload,
+        createdAt: now,
+        retryCount: 0,
+        syncStatus: 'pending',
+      });
+      setConsultationForm(emptyConsultationForm);
+      setConsultationNotice('Saved offline. It will sync automatically when internet connection is restored.');
+      setConsultationSaving(false);
+      return;
+    }
+
+    const { error } = await supabaseClient.from('health_records').insert(payload as never);
+    if (error) {
+      setConsultationNotice(`Unable to save consultation record: ${error.message}`);
+      setConsultationSaving(false);
+      return;
+    }
+
+    setConsultationForm(emptyConsultationForm);
+    setConsultationNotice('Consultation record saved successfully.');
+    setRelated((current) => ({ ...current, healthRecords: [payload as HealthRecord, ...current.healthRecords] }));
+    setConsultationSaving(false);
+  };
 
   if (loading) {
     return <div className="flex min-h-[60vh] items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin text-primary" />Loading patient profile...</div>;
@@ -275,19 +470,19 @@ export default function PatientProfilePage() {
         </TabsContent>
 
         <TabsContent value="triage">
-          <Card><CardHeader><SectionHeader icon={ShieldAlert} title="Triage assessments" count={related.triageAssessments.length} /><CardDescription>Assessment risk levels, scores, and recorded recommendations.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No triage assessments are available for this patient.">{related.triageAssessments.map((assessment) => { const triageNotes = readTriageNotes(assessment.notes); return <div key={assessment.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="text-sm font-semibold text-foreground">Risk level</span><StatusBadge status={assessment.severity} /></div><span className="text-xs text-muted-foreground">{formatDateTime(assessment.created_at)}</span></div><dl className="mt-4 grid gap-4 sm:grid-cols-3"><DetailItem label="Chief complaint" value={valueOrFallback(assessment.chief_complaint)} /><DetailItem label="Risk score" value={triageNotes.score} /><DetailItem label="Recommendation" value={triageNotes.recommendation} /></dl></div>; })}</RecordList></CardContent></Card>
+          <Card><CardHeader><SectionHeader icon={ShieldAlert} title="Triage assessments" count={related.triageAssessments.length} /><CardDescription>Assessment risk levels, scores, and recorded recommendations.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No triage assessments are available for this patient.">{related.triageAssessments.map((assessment) => { const assessmentAny = assessment as any; const triageNotes = readTriageNotes(assessmentAny.notes); return <div key={assessment.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="text-sm font-semibold text-foreground">Risk level</span><StatusBadge status={assessmentAny.severity} /></div><span className="text-xs text-muted-foreground">{formatDateTime(assessment.created_at)}</span></div><dl className="mt-4 grid gap-4 sm:grid-cols-3"><DetailItem label="Chief complaint" value={valueOrFallback(assessmentAny.chief_complaint)} /><DetailItem label="Risk score" value={triageNotes.score} /><DetailItem label="Recommendation" value={triageNotes.recommendation} /></dl></div>; })}</RecordList></CardContent></Card>
         </TabsContent>
 
         <TabsContent value="appointments">
-          <Card><CardHeader><SectionHeader icon={CalendarDays} title="Appointments" count={related.appointments.length} /><CardDescription>Scheduled and completed appointment records.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No appointments are available for this patient.">{related.appointments.map((appointment) => <div key={appointment.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-primary" /><span className="font-semibold text-foreground">{formatDateTime(appointment.scheduled_time)}</span></div><StatusBadge status={appointment.status} /></div><div className="mt-4 grid gap-4 sm:grid-cols-2"><DetailItem label="Reason" value={valueOrFallback(appointment.reason)} /><DetailItem label="Queue number" value={appointment.queue_number?.toString() || 'Not assigned'} /></div></div>)}</RecordList></CardContent></Card>
+          <Card><CardHeader><SectionHeader icon={CalendarDays} title="Appointments" count={related.appointments.length} /><CardDescription>Scheduled and completed appointment records.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No appointments are available for this patient.">{related.appointments.map((appointment) => { const appointmentAny = appointment as any; return <div key={appointment.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-primary" /><span className="font-semibold text-foreground">{formatDateTime(appointmentAny.scheduled_time ?? appointmentAny.appointment_date)}</span></div><StatusBadge status={appointment.status} /></div><div className="mt-4 grid gap-4 sm:grid-cols-2"><DetailItem label="Reason" value={valueOrFallback(appointmentAny.reason ?? appointmentAny.notes)} /><DetailItem label="Queue number" value={appointment.queue_number?.toString() || 'Not assigned'} /></div></div>; })}</RecordList></CardContent></Card>
         </TabsContent>
 
         <TabsContent value="referrals">
-          <Card><CardHeader><SectionHeader icon={ClipboardList} title="Referrals" count={related.referrals.length} /><CardDescription>Referral status, destination, and completion tracking.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No referrals are available for this patient.">{related.referrals.map((referral) => <div key={referral.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-semibold text-foreground">{valueOrFallback(referral.reason)}</p><p className="mt-1 text-xs text-muted-foreground">Referred {formatDateTime(referral.referred_at)}</p></div><StatusBadge status={referral.status} /></div><dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><DetailItem label="From facility" value={facilityNames.get(referral.from_facility_id) ?? 'Source facility unavailable'} /><DetailItem label="Destination" value={facilityNames.get(referral.to_facility_id) ?? 'Destination facility unavailable'} /><DetailItem label="Priority" value={valueOrFallback(referral.priority)} /><DetailItem label="Diagnosis" value={valueOrFallback(referral.diagnosis)} /><DetailItem label="Arrived" value={formatDateTime(referral.arrived_at)} /><DetailItem label="Completed" value={formatDateTime(referral.completed_at)} /></dl></div>)}</RecordList></CardContent></Card>
+          <Card><CardHeader><SectionHeader icon={ClipboardList} title="Referrals" count={related.referrals.length} /><CardDescription>Referral status, destination, and completion tracking.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No referrals are available for this patient.">{related.referrals.map((referral) => { const referralAny = referral as any; return <div key={referral.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-semibold text-foreground">{valueOrFallback(referralAny.reason)}</p><p className="mt-1 text-xs text-muted-foreground">Referred {formatDateTime(referralAny.referred_at ?? referralAny.created_at)}</p></div><StatusBadge status={referral.status} /></div><dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><DetailItem label="From facility" value={facilityNames.get(referralAny.from_facility_id ?? referralAny.source_facility_id) ?? 'Source facility unavailable'} /><DetailItem label="Destination" value={facilityNames.get(referralAny.to_facility_id ?? referralAny.destination_facility_id) ?? 'Destination facility unavailable'} /><DetailItem label="Priority" value={valueOrFallback(referralAny.priority)} /><DetailItem label="Diagnosis" value={valueOrFallback(referralAny.diagnosis)} /><DetailItem label="Arrived" value={formatDateTime(referralAny.arrived_at)} /><DetailItem label="Completed" value={formatDateTime(referralAny.completed_at)} /></dl></div>; })}</RecordList></CardContent></Card>
         </TabsContent>
 
         <TabsContent value="followups">
-          <Card><CardHeader><SectionHeader icon={CheckCircle2} title="Follow-ups" count={related.followUps.length} /><CardDescription>Follow-up dates, status, assignments, and outcomes.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No follow-ups are available for this patient.">{related.followUps.map((followUp) => { const relatedReferral = related.referrals.find((referral) => referral.id === followUp.referral_id); return <div key={followUp.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><CalendarDays className="h-4 w-4 text-primary" /><span className="font-semibold text-foreground">{formatDate(followUp.scheduled_date)}</span></div><StatusBadge status={followUp.status} /></div><dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><DetailItem label="Facility" value={followUp.facility_id ? facilityNames.get(followUp.facility_id) ?? 'Facility unavailable' : 'Not assigned'} /><DetailItem label="Assigned worker" value={followUp.assigned_to ? assignedProfileNames.get(followUp.assigned_to) ?? 'Worker unavailable' : 'Not assigned'} /><DetailItem label="Related referral" value={relatedReferral ? relatedReferral.reason : 'No related referral'} /><DetailItem label="Notes" value={valueOrFallback(followUp.notes)} /><DetailItem label="Outcome" value={valueOrFallback(followUp.outcome)} /><DetailItem label="Created" value={formatDateTime(followUp.created_at)} /></dl></div>; })}</RecordList></CardContent></Card>
+          <Card><CardHeader><SectionHeader icon={CheckCircle2} title="Follow-ups" count={related.followUps.length} /><CardDescription>Follow-up dates, status, assignments, and outcomes.</CardDescription></CardHeader><CardContent><RecordList emptyMessage="No follow-ups are available for this patient.">{related.followUps.map((followUp) => { const followUpAny = followUp as any; const relatedReferral = related.referrals.find((referral) => referral.id === followUpAny.referral_id); return <div key={followUp.id} className="rounded-lg border border-border/70 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><CalendarDays className="h-4 w-4 text-primary" /><span className="font-semibold text-foreground">{formatDate(followUpAny.scheduled_date ?? followUpAny.follow_up_date)}</span></div><StatusBadge status={followUp.status} /></div><dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><DetailItem label="Facility" value={followUpAny.facility_id ? facilityNames.get(followUpAny.facility_id) ?? 'Facility unavailable' : 'Not assigned'} /><DetailItem label="Assigned worker" value={followUpAny.assigned_to ?? followUpAny.health_worker_id ? assignedProfileNames.get(followUpAny.assigned_to ?? followUpAny.health_worker_id) ?? 'Worker unavailable' : 'Not assigned'} /><DetailItem label="Related referral" value={relatedReferral ? (relatedReferral as any).reason : 'No related referral'} /><DetailItem label="Notes" value={valueOrFallback(followUpAny.notes)} /><DetailItem label="Outcome" value={valueOrFallback(followUpAny.outcome)} /><DetailItem label="Created" value={formatDateTime(followUp.created_at)} /></dl></div>; })}</RecordList></CardContent></Card>
         </TabsContent>
       </Tabs>
     </div>

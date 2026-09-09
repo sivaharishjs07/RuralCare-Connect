@@ -98,35 +98,62 @@ export default function PatientAppointmentBookingPage() {
       setLoadingData(true);
       setLoadError(null);
 
-      const [patientResult, facilityResult, doctorResult] = await Promise.all([
-        supabaseClient
-          .from('patients')
-          .select('id')
-          .eq('profile_id', user.id)
-          .maybeSingle(),
-        supabaseClient.from('facilities').select('id, name').order('name', { ascending: true }),
-        supabaseClient
-          .from('profiles')
-          .select('id, full_name')
-          .eq('role', 'doctor')
-          .order('full_name', { ascending: true }),
-      ]);
+      if (!navigator.onLine) {
+        try {
+          const [cachedPatient, cachedFacilities, cachedDoctors] = await Promise.all([
+            supabaseClient.from('patients').select('id').eq('profile_id', user.id).maybeSingle(),
+            supabaseClient.from('facilities').select('id, name').order('name', { ascending: true }),
+            supabaseClient.from('profiles').select('id, full_name').eq('role', 'doctor').order('full_name', { ascending: true }),
+          ]);
 
-      if (!active) return;
+          if (!active) return;
+          if (cachedPatient.data?.id) setPatientId(cachedPatient.data.id);
+          setFacilities((cachedFacilities.data ?? []) as Option[]);
+          setDoctors((cachedDoctors.data ?? []).map((doctor) => ({ id: doctor.id, name: doctor.full_name })));
+          setLoadingData(false);
+          return;
+        } catch {
+          if (!active) return;
+          setLoadError('profile');
+          setLoadingData(false);
+          return;
+        }
+      }
 
-      if (patientResult.error || !patientResult.data) {
+      try {
+        const [patientResult, facilityResult, doctorResult] = await Promise.all([
+          supabaseClient
+            .from('patients')
+            .select('id')
+            .eq('profile_id', user.id)
+            .maybeSingle(),
+          supabaseClient.from('facilities').select('id, name').order('name', { ascending: true }),
+          supabaseClient
+            .from('profiles')
+            .select('id, full_name')
+            .eq('role', 'doctor')
+            .order('full_name', { ascending: true }),
+        ]);
+
+        if (!active) return;
+
+        if (patientResult.error || !patientResult.data) {
+          setLoadError('profile');
+        } else if (facilityResult.error) {
+          setPatientId(patientResult.data.id);
+          setLoadError('facilities');
+        } else if (doctorResult.error) {
+          setPatientId(patientResult.data.id);
+          setFacilities((facilityResult.data ?? []) as Option[]);
+          setLoadError('doctors');
+        } else {
+          setPatientId(patientResult.data.id);
+          setFacilities((facilityResult.data ?? []) as Option[]);
+          setDoctors((doctorResult.data ?? []).map((doctor) => ({ id: doctor.id, name: doctor.full_name })));
+        }
+      } catch {
+        if (!active) return;
         setLoadError('profile');
-      } else if (facilityResult.error) {
-        setPatientId(patientResult.data.id);
-        setLoadError('facilities');
-      } else if (doctorResult.error) {
-        setPatientId(patientResult.data.id);
-        setFacilities((facilityResult.data ?? []) as Option[]);
-        setLoadError('doctors');
-      } else {
-        setPatientId(patientResult.data.id);
-        setFacilities((facilityResult.data ?? []) as Option[]);
-        setDoctors((doctorResult.data ?? []).map((doctor) => ({ id: doctor.id, name: doctor.full_name })));
       }
 
       setLoadingData(false);
