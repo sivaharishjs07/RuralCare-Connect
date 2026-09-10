@@ -9,6 +9,13 @@ import { Input } from '@/components/ui/input';
 type Language = 'en' | 'hi' | 'mr';
 type Screen = 'idle' | 'main' | 'booking-phone' | 'booking-date' | 'booking-time' | 'status-phone' | 'info-menu' | 'ended';
 
+type AppointmentSummary = {
+  appointmentDate?: string;
+  status?: string | null;
+  facility?: string | null;
+  doctor?: string | null;
+};
+
 type SessionResponse = {
   ok?: boolean;
   message?: string;
@@ -18,12 +25,7 @@ type SessionResponse = {
   sessionId?: string;
   action?: string;
   code?: string;
-  appointments?: Array<{
-    appointmentDate?: string;
-    status?: string | null;
-    facility?: string | null;
-    doctor?: string | null;
-  }>;
+  appointments?: AppointmentSummary[];
   appointment?: {
     id?: string;
     appointmentDate?: string;
@@ -59,7 +61,7 @@ export default function IvrSimulatorPage() {
   const [phoneInput, setPhoneInput] = useState('');
   const [appointmentDateInput, setAppointmentDateInput] = useState('');
   const [appointmentTimeInput, setAppointmentTimeInput] = useState('');
-  const [appointments, setAppointments] = useState<SessionResponse['appointments']>([]);
+  const [appointments, setAppointments] = useState<AppointmentSummary[]>([]);
 
   const statusText = useMemo(() => {
     if (screen === 'idle') return 'Call ready';

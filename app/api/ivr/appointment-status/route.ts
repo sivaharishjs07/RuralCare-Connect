@@ -1,4 +1,4 @@
-npm import { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { getIvrLanguage, getIvrMessage } from '@/lib/ivr/messages';
 import { assertIvrSecret, findPatientByPhone, getAppointmentContext, getPatientAppointments, IvrServiceError, normalisePhone } from '@/lib/ivr/server';
 
