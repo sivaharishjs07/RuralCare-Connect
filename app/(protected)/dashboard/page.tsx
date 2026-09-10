@@ -9,6 +9,7 @@ import {
   Users,
   Bell,
   CalendarDays,
+  PhoneCall,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/use-auth';
@@ -40,6 +41,13 @@ export default function DashboardPage() {
       description: 'Manage appointments and patient queues',
       href: '/appointments',
       color: 'text-accent',
+    },
+    {
+      icon: PhoneCall,
+      label: 'IVR',
+      description: 'Multilingual voice-based healthcare access, appointment booking and health information.',
+      href: '/ivr',
+      color: 'text-primary',
     },
     {
       icon: ClipboardList,

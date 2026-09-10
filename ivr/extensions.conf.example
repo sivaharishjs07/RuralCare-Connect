@@ -1,0 +1,40 @@
+; Asterisk local/demo example. Do not put a real shared secret in this file.
+; Set IVR_API_URL and IVR_SHARED_SECRET in your Asterisk runtime environment.
+; This uses System(curl) for clarity and DTMF collection. A production setup may
+; replace these shell calls with an AGI script that parses the same JSON API.
+
+[ivr-demo]
+exten => 100,1,Answer()
+ same => n,Set(IVR_API_URL=${ENV(IVR_API_URL)})
+ same => n,Set(IVR_SHARED_SECRET=${ENV(IVR_SHARED_SECRET)})
+ same => n,Read(LANG,ivr/language-menu,1,,3,5)
+ same => n,Set(LANGUAGE=${IF($["${LANG}"="2"]?hi:${IF($["${LANG}"="3"]?mr:en)})})
+ same => n(main),Read(MENU,ivr/main-menu,1,,3,5)
+ same => n,GotoIf($["${MENU}"="0"]?hangup)
+ same => n,GotoIf($["${MENU}"="9"]?main)
+ same => n,GotoIf($["${MENU}"="1"]?book)
+ same => n,GotoIf($["${MENU}"="2"]?status)
+ same => n,GotoIf($["${MENU}"="3"]?information)
+ same => n,Playback(ivr/invalid-input)
+ same => n,Goto(main)
+
+ same => n(book),Read(PHONE,ivr/registered-phone,16,,1,10)
+ same => n,Read(DATE,ivr/date-ddmmyyyy,8,,1,10)
+ ; The helper must POST JSON and play the returned message/prompt identifier.
+ ; Example request body: {"language":"${LANGUAGE}","phone":"${PHONE}","date":"${DATE}"}
+ same => n,System(curl -sS -X POST "${IVR_API_URL}/api/ivr/appointment" -H "content-type: application/json" -H "x-ivr-secret: ${IVR_SHARED_SECRET}" --data '{"language":"${LANGUAGE}","phone":"${PHONE}","date":"${DATE}"}' > /tmp/ivr-book-${UNIQUEID}.json)
+ same => n,Playback(ivr/appointment-result)
+ same => n,Goto(main)
+
+ same => n(status),Read(PHONE,ivr/registered-phone,16,,1,10)
+ same => n,System(curl -sS -X POST "${IVR_API_URL}/api/ivr/appointment-status" -H "content-type: application/json" -H "x-ivr-secret: ${IVR_SHARED_SECRET}" --data '{"language":"${LANGUAGE}","phone":"${PHONE}"}' > /tmp/ivr-status-${UNIQUEID}.json)
+ same => n,Playback(ivr/appointment-status-result)
+ same => n,Goto(main)
+
+ same => n(information),Read(INFO,ivr/information-menu,1,,3,5)
+ same => n,System(curl -sS -X POST "${IVR_API_URL}/api/ivr/information" -H "content-type: application/json" -H "x-ivr-secret: ${IVR_SHARED_SECRET}" --data '{"language":"${LANGUAGE}","dtmf":"${INFO}"}' > /tmp/ivr-info-${UNIQUEID}.json)
+ same => n,Playback(ivr/information-result)
+ same => n,Goto(main)
+
+ same => n(hangup),Playback(vm-goodbye)
+ same => n,Hangup()

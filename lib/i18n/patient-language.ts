@@ -137,10 +137,7 @@ export function PatientLanguageProvider({ children }: { children: React.ReactNod
   );
 }
 
-export function usePatientLanguage() {
-  const context = useContext(PatientLanguageContext);
-  if (context) return context;
-
+function usePatientLanguageFallback() {
   const [language, setLanguageState] = useState<PatientLanguage>('en');
 
   useEffect(() => {
@@ -160,4 +157,10 @@ export function usePatientLanguage() {
     setLanguage,
     t: (key: TranslationKey) => translations[language][key],
   };
+}
+
+export function usePatientLanguage() {
+  const context = useContext(PatientLanguageContext);
+  const fallback = usePatientLanguageFallback();
+  return context ?? fallback;
 }
